@@ -1,0 +1,18 @@
+# dependencies (also installed at repo-parent level)
+node_modules/
+
+# generated perception artifacts: screenshots + atoms.json, ~250MB
+shots/
+
+# per-site snapshots with embedded base64 screenshots (huge, generated)
+page/snap.html
+page/snap-*.html
+
+# all screenshots/overlays are generated; no source PNGs are tracked
+*.png
+*.log
+
+# compiled binary — rebuild: swiftc -O bin/vision-ocr.swift -o bin/vision-ocr
+bin/vision-ocr
+
+.DS_Store

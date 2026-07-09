@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>overlap test</title>
+<style>
+  *{box-sizing:border-box;margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+  body{background:#2b2f3a;height:100vh;overflow:hidden}
+  .win{position:absolute;border-radius:10px;box-shadow:0 14px 44px #00000077;overflow:hidden;border:2px solid}
+  .bar{padding:10px 14px;font-weight:700;font-size:14px;color:#fff}
+  .body{padding:16px;font-size:13px;line-height:1.5}
+  .btn{display:inline-block;margin-top:12px;color:#fff;padding:8px 14px;border-radius:7px;font-size:13px;font-weight:600}
+  /* три КОНТРАСТНЫХ окна друг на друге: разный цвет + бордер + заголовок своего оттенка */
+  #w1{left:90px;top:80px;width:420px;height:300px;background:#dbeafe;border-color:#2563eb}
+  #w1 .bar{background:#2563eb} #w1 .btn{background:#2563eb} #w1 .body{color:#1e3a8a}
+  #w2{left:300px;top:210px;width:440px;height:320px;background:#dcfce7;border-color:#16a34a}
+  #w2 .bar{background:#16a34a} #w2 .btn{background:#16a34a} #w2 .body{color:#14532d}
+  #w3{left:560px;top:130px;width:400px;height:340px;background:#fae8ff;border-color:#c026d3}
+  #w3 .bar{background:#c026d3} #w3 .btn{background:#c026d3} #w3 .body{color:#701a75}
+</style></head>
+<body>
+  <div class="win" id="w1"><div class="bar">Window One — Files</div><div class="body">A blue background window, partly covered by the others. It has a list of documents and a toolbar you can no longer fully see.<span class="btn">Open</span></div></div>
+  <div class="win" id="w2"><div class="bar">Window Two — Editor</div><div class="body">The green middle window. On top of Window One, underneath Window Three on its right edge.<span class="btn">Save</span></div></div>
+  <div class="win" id="w3"><div class="bar">Window Three — Terminal</div><div class="body">The purple top-most window on the right. Fully visible, nothing covers it.<span class="btn">Run</span></div></div>
+</body></html>

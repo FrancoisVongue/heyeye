@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Nimbus — demo</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+  body{background:#eef1f6;color:#1a1f2b}
+  .bar{display:flex;align-items:center;gap:22px;background:#12203a;color:#fff;padding:12px 22px}
+  .bar .logo{font-weight:800;font-size:19px;color:#7fd1ff;letter-spacing:.5px}
+  .bar nav{display:flex;gap:18px;font-size:14px;opacity:.9}
+  .bar .search{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .bar input{padding:7px 12px;border:0;border-radius:7px;width:230px;font-size:13px}
+  .bar .signin{background:#2f6bff;color:#fff;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:600}
+  .wrap{display:grid;grid-template-columns:210px 1fr 260px;gap:18px;max-width:1300px;margin:18px auto;padding:0 18px}
+  .side{background:#fff;border-radius:12px;padding:16px}
+  .side h3{font-size:12px;text-transform:uppercase;color:#8a93a6;margin-bottom:10px}
+  .side a{display:block;padding:9px 10px;border-radius:8px;font-size:14px;color:#26324a;text-decoration:none;margin-bottom:2px}
+  .side a.on{background:#e8efff;color:#2f6bff;font-weight:600}
+  .hero{background:linear-gradient(120deg,#3a1c71,#d76d77,#ffaf7b);border-radius:14px;color:#fff;padding:26px;margin-bottom:18px}
+  .hero h1{font-size:26px;margin-bottom:8px}
+  .hero p{opacity:.92;max-width:560px;line-height:1.5}
+  .hero .cta{display:inline-block;margin-top:14px;background:#fff;color:#3a1c71;font-weight:700;padding:10px 18px;border-radius:8px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .card{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 4px #000000012}
+  .card .img{height:120px;display:flex;align-items:center;justify-content:center;font-size:40px}
+  .card .b{padding:14px}
+  .card h4{font-size:16px;margin-bottom:6px}
+  .card p{font-size:13px;color:#5a6273;line-height:1.45;margin-bottom:10px}
+  .card .row{display:flex;align-items:center;justify-content:space-between}
+  .card .tag{font-size:11px;color:#8a93a6}
+  .card .btn{background:#eef2fb;color:#2f6bff;font-weight:600;font-size:12px;padding:6px 12px;border-radius:6px}
+  .article{background:#fff;border-radius:12px;padding:20px;margin-top:18px}
+  .article h2{font-size:20px;margin-bottom:10px}
+  .article p{font-size:14px;line-height:1.6;color:#3a4256;margin-bottom:10px}
+  .rail .box{background:#fff;border-radius:12px;padding:16px;margin-bottom:16px}
+  .rail .promo{background:#0f7a5f;color:#fff}
+  .rail h3{font-size:13px;margin-bottom:10px}
+  .rail li{list-style:none;font-size:13px;padding:8px 0;border-bottom:1px solid #eef1f6;display:flex;gap:8px}
+  .rail li b{color:#8a93a6}
+  footer{background:#12203a;color:#c7d0e0;margin-top:24px;padding:26px 0}
+  .fcols{max-width:1300px;margin:auto;padding:0 18px;display:grid;grid-template-columns:repeat(4,1fr);gap:18px;font-size:13px}
+  .fcols h5{color:#fff;margin-bottom:10px;font-size:13px}
+  .fcols a{display:block;color:#9fb0cc;text-decoration:none;padding:4px 0}
+</style></head>
+<body>
+  <header class="bar">
+    <div class="logo">◆ NIMBUS</div>
+    <nav><a>Home</a><a>Products</a><a>Pricing</a><a>Blog</a><a>About</a></nav>
+    <div class="search"><input placeholder="Search the docs…"><span class="signin">Sign in</span></div>
+  </header>
+
+  <div class="wrap">
+    <aside class="side">
+      <h3>Categories</h3>
+      <a class="on">All updates</a><a>Engineering</a><a>Design</a><a>Machine learning</a>
+      <a>Product</a><a>Company</a><a>Security</a><a>Changelog</a>
+    </aside>
+
+    <main>
+      <section class="hero">
+        <h1>Ship faster with Nimbus 3.0</h1>
+        <p>A unified workspace for teams that build. Automations, insights and a canvas that finally keeps up with how you think.</p>
+        <span class="cta">Get started free</span>
+      </section>
+
+      <div class="grid">
+        <div class="card"><div class="img" style="background:linear-gradient(135deg,#ff9a9e,#fad0c4)">🚀</div><div class="b"><h4>Launch week recap</h4><p>Everything we shipped across the platform this cycle, in one place.</p><div class="row"><span class="tag">Product · 4 min</span><span class="btn">Read</span></div></div></div>
+        <div class="card"><div class="img" style="background:linear-gradient(135deg,#a1c4fd,#c2e9fb)">🧠</div><div class="b"><h4>How our ranking model works</h4><p>A look under the hood at the retrieval stack powering search.</p><div class="row"><span class="tag">ML · 8 min</span><span class="btn">Read</span></div></div></div>
+        <div class="card"><div class="img" style="background:linear-gradient(135deg,#84fab0,#8fd3f4)">🎨</div><div class="b"><h4>Redesigning the canvas</h4><p>Why we rebuilt the editor from scratch and what changed.</p><div class="row"><span class="tag">Design · 6 min</span><span class="btn">Read</span></div></div></div>
+        <div class="card"><div class="img" style="background:linear-gradient(135deg,#fbc2eb,#a6c1ee)">🔒</div><div class="b"><h4>Our approach to security</h4><p>SOC2, encryption at rest and the boring details that matter.</p><div class="row"><span class="tag">Security · 5 min</span><span class="btn">Read</span></div></div></div>
+      </div>
+
+      <article class="article">
+        <h2>The state of building in 2026</h2>
+        <p>Teams no longer accept tools that force a choice between speed and structure. The winning stacks let a small group move like a large one, without the overhead that used to come with scale.</p>
+        <p>In this report we break down what changed, where the friction moved, and the patterns we see in teams that ship weekly without burning out.</p>
+      </article>
+    </main>
+
+    <aside class="rail">
+      <div class="box promo"><h3>Nimbus Pro</h3><p style="font-size:13px;line-height:1.5">Unlimited automations and priority support. Try 14 days free.</p><span class="cta" style="display:inline-block;margin-top:10px;background:#fff;color:#0f7a5f;font-weight:700;padding:8px 14px;border-radius:7px">Upgrade</span></div>
+      <div class="box"><h3>Trending</h3><ul><li><b>01</b> Vector search at scale</li><li><b>02</b> The new canvas API</li><li><b>03</b> Cutting build times 40%</li><li><b>04</b> Design tokens, done right</li><li><b>05</b> Hiring for taste</li></ul></div>
+    </aside>
+  </div>
+
+  <footer><div class="fcols">
+    <div><h5>Product</h5><a>Features</a><a>Integrations</a><a>Pricing</a><a>Changelog</a></div>
+    <div><h5>Company</h5><a>About</a><a>Careers</a><a>Blog</a><a>Press</a></div>
+    <div><h5>Resources</h5><a>Docs</a><a>API</a><a>Status</a><a>Community</a></div>
+    <div><h5>Legal</h5><a>Privacy</a><a>Terms</a><a>Security</a><a>Cookies</a></div>
+  </div></footer>
+</body></html>
