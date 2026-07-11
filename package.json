@@ -5,8 +5,9 @@
   "private": true,
   "description": "Pure-CV screenshot perception + action interface for AI agents — no ML, no DOM, screenshot-only. The model sees compact TEXT (regions by id), acts by id; the program maps id→pixels→mouse/keyboard.",
   "dependencies": {
+    "onnxruntime-node": "^1.27.0",
+    "ppu-paddle-ocr": "^6.0.0",
     "pngjs": "^7.0.0",
-    "puppeteer-core": "^25.1.0",
-    "tesseract.js": "^7.0.0"
+    "puppeteer-core": "^25.1.0"
   }
 }
