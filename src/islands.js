@@ -12,6 +12,42 @@ export function decodeFrame(buf) { const { width: W, height: H, data } = PNG.syn
 export function cropFrame(f, x, y, bw, bh) { x = Math.max(0, x | 0); y = Math.max(0, y | 0); bw = Math.min(bw | 0, f.W - x); bh = Math.min(bh | 0, f.H - y); const out = new Uint8Array(bw * bh * 4); for (let yy = 0; yy < bh; yy++) { const so = ((y + yy) * f.W + x) * 4; out.set(f.data.subarray(so, so + bw * 4), yy * bw * 4); } return { W: bw, H: bh, data: out }; }
 const asFrame = (src) => (src && src.data && src.W ? src : decodeFrame(src)); // принимаем кадр ИЛИ буфер
 
+// ОБЩАЯ ЯРКОСТЬ (Float32) на данном maxW, мемоизированная по кадру → edgeRects и sidePanels (оба @1577)
+// строят её РАЗ, а не дважды. Формула/индексы посимвольно те же, что были в стадиях → биты идентичны.
+// Ключ включает maxW: сетка detect (760, Math.round) НЕ пересекается с этой (1577, |0). cropFrame даёт
+// свежий объект-кадр на каждый крон → WeakMap их изолирует, реентерабельно и без общего мутируемого стейта.
+const _lumCache = new WeakMap();
+function buildLum(frame, maxW) {
+  let m = _lumCache.get(frame); if (m && m.maxW === maxW) return m;
+  const { W, H, data } = frame;
+  const s = Math.min(1, maxW / W), w = (W * s) | 0, h = (H * s) | 0;
+  const L = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4; L[y * w + x] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  m = { L, w, h, s, maxW }; _lumCache.set(frame, m); return m;
+}
+
+// RUN-LENGTH + UNION-FIND СВЯЗНЫЕ КОМПОНЕНТЫ (замена BFS-заливок): пиксели где src[i]==0, внутри окна,
+// 4-связность. Строки → горизонтальные раны; ран [a,b] на строке y объединяется с раном [c,d] на y-1
+// ТОЧНО при перекрытии a<=d && c<=b (= 4-связность по вертикали, тот же набор, что BFS-соседи ±1). Возвращает
+// массивы ранов (rA start-x, rB end-x, rY row) + find(рут). Два указателя по строке → линейно, без p%w.
+function runCCL(src, rx0, ry0, rx1, ry1, w) {
+  const rA = [], rB = [], rY = [], par = [];
+  const find = (x) => { while (par[x] !== x) x = par[x] = par[par[x]]; return x; };
+  let prevS = 0, prevE = -1;
+  for (let y = ry0; y <= ry1; y++) {
+    const base = y * w, rowS = rA.length; let x = rx0, pp = prevS;
+    while (x <= rx1) {
+      if (src[base + x]) { x++; continue; }
+      const a = x; while (x <= rx1 && !src[base + x]) x++; const b = x - 1;
+      const id = rA.length; rA.push(a); rB.push(b); rY.push(y); par.push(id);
+      while (pp <= prevE && rB[pp] < a) pp++;                                  // проскочить раны, кончившиеся до a
+      for (let q = pp; q <= prevE && rA[q] <= b; q++) if (rB[q] >= a) { const r1 = find(id), r2 = find(q); if (r1 !== r2) par[r1] = r2; }
+    }
+    prevS = rowS; prevE = rA.length - 1;
+  }
+  return { rA, rB, rY, find, n: rA.length };
+}
+
 function loadScaled(src, maxW) {
   const { W, H, data } = asFrame(src);
   const s = Math.min(1, maxW / W), w = Math.max(1, Math.round(W * s)), h = Math.max(1, Math.round(H * s));
@@ -32,21 +68,27 @@ function bgColor(px, w, h, x0, y0, x1, y1) {
 const far = (px, j, bg, tol) => Math.max(Math.abs(px[j] - bg[0]), Math.abs(px[j + 1] - bg[1]), Math.abs(px[j + 2] - bg[2])) > tol;
 
 // острова «не-фона» внутри [x0,y0,x1,y1] при данном bg; возвращает компоненты (bbox+маска-инфо)
-function islandsIn(px, w, h, x0, y0, x1, y1, bg, tol, minArea, lab, stamp) {
-  const out = [], q = [];
-  for (let sy = y0; sy <= y1; sy++) for (let sx = x0; sx <= x1; sx++) {
-    const s = sy * w + sx, sj = s * 3;
-    if (lab[s] === stamp || !far(px, sj, bg, tol)) continue;
-    lab[s] = stamp; let head = 0; q.length = 0; q.push(s);
-    let ax0 = sx, ay0 = sy, ax1 = sx, ay1 = sy, area = 0;
-    while (head < q.length) { const p = q[head++], pxx = p % w, pyy = (p / w) | 0; area++;
-      if (pxx < ax0) ax0 = pxx; if (pxx > ax1) ax1 = pxx; if (pyy < ay0) ay0 = pyy; if (pyy > ay1) ay1 = pyy;
-      const tryN = (n, nx, ny) => { if (nx < x0 || nx > x1 || ny < y0 || ny > y1) return; if (lab[n] !== stamp && far(px, n * 3, bg, tol)) { lab[n] = stamp; q.push(n); } };
-      if (pxx + 1 <= x1) tryN(p + 1, pxx + 1, pyy); if (pxx - 1 >= x0) tryN(p - 1, pxx - 1, pyy);
-      if (pyy + 1 <= y1) tryN(p + w, pxx, pyy + 1); if (pyy - 1 >= y0) tryN(p - w, pxx, pyy - 1);
+function islandsIn(px, w, h, x0, y0, x1, y1, bg, tol, minArea) {
+  const b0 = bg[0], b1 = bg[1], b2 = bg[2];                         // «не-фон» = far() ИНЛАЙНОМ (тот же предикат)
+  const rA = [], rB = [], rY = [], par = [];
+  const find = (x) => { while (par[x] !== x) x = par[x] = par[par[x]]; return x; };
+  let prevS = 0, prevE = -1;
+  for (let y = y0; y <= y1; y++) {
+    const base3 = y * w * 3, rowS = rA.length; let x = x0, pp = prevS;
+    while (x <= x1) {
+      let j = base3 + x * 3;
+      if (!(Math.abs(px[j] - b0) > tol || Math.abs(px[j + 1] - b1) > tol || Math.abs(px[j + 2] - b2) > tol)) { x++; continue; }
+      const a = x;
+      while (x <= x1) { const k = base3 + x * 3; if (Math.abs(px[k] - b0) > tol || Math.abs(px[k + 1] - b1) > tol || Math.abs(px[k + 2] - b2) > tol) x++; else break; }
+      const b = x - 1, id = rA.length; rA.push(a); rB.push(b); rY.push(y); par.push(id);
+      while (pp <= prevE && rB[pp] < a) pp++;
+      for (let q = pp; q <= prevE && rA[q] <= b; q++) if (rB[q] >= a) { const r1 = find(id), r2 = find(q); if (r1 !== r2) par[r1] = r2; }
     }
-    if (area >= minArea && ax1 - ax0 > 5 && ay1 - ay0 > 5) out.push({ x0: ax0, y0: ay0, x1: ax1, y1: ay1, area });
+    prevS = rowS; prevE = rA.length - 1;
   }
+  const acc = new Map(), out = [];                                  // acc в скан-порядке (первый ран = top-left) = порядок BFS-сидов
+  for (let i = 0; i < rA.length; i++) { const r = find(i), a = rA[i], b = rB[i], y = rY[i]; let o = acc.get(r); if (!o) { o = { x0: a, y0: y, x1: b, y1: y, area: 0 }; acc.set(r, o); } else { if (a < o.x0) o.x0 = a; if (b > o.x1) o.x1 = b; if (y < o.y0) o.y0 = y; if (y > o.y1) o.y1 = y; } o.area += b - a + 1; }
+  for (const o of acc.values()) if (o.area >= minArea && o.x1 - o.x0 > 5 && o.y1 - o.y0 > 5) out.push({ x0: o.x0, y0: o.y0, x1: o.x1, y1: o.y1, area: o.area });
   return out;
 }
 // форма + признак КАРТИНКИ. Картинка (фото) = много разных цветов И высокая плотность краёв.
@@ -132,7 +174,7 @@ function mergeImageNodes(nodes, pad = 5) {
 
 export function detect(buf, { maxW = 760, tol = 14, minAreaFrac = 0.0025, maxDepth = 4 } = {}) {
   const { px, w, h, s } = loadScaled(buf, maxW);
-  const lab = new Int32Array(w * h).fill(-1), seen = new Int32Array(w * h).fill(-1); let stamp = 0;
+  const seen = new Int32Array(w * h).fill(-1); let stamp = 0;    // lab больше не нужен: islandsIn на union-find
   const minArea = Math.max(120, (minAreaFrac * w * h) | 0);
   const nodes = [];
   const emit = (box, shape, parent) => { const id = nodes.length; nodes.push({ id, parent, shape, image: false, box: [Math.round(box.x0 / s), Math.round(box.y0 / s), Math.round((box.x1 - box.x0 + 1) / s), Math.round((box.y1 - box.y0 + 1) / s)] }); return id; };
@@ -140,7 +182,7 @@ export function detect(buf, { maxW = 760, tol = 14, minAreaFrac = 0.0025, maxDep
   const recurse = (x0, y0, x1, y1, geoDepth, nodeId) => {
     const bg = bgColor(px, w, h, x0, y0, x1, y1);
     const levelArea = (x1 - x0) * (y1 - y0);
-    const isl = geoDepth > maxDepth ? [] : islandsIn(px, w, h, x0, y0, x1, y1, bg, tol, minArea, lab, ++stamp);
+    const isl = geoDepth > maxDepth ? [] : islandsIn(px, w, h, x0, y0, x1, y1, bg, tol, minArea);
     const sig = isl.filter((a) => (a.x1 - a.x0 + 1) * (a.y1 - a.y0 + 1) < 0.85 * levelArea); // под-острова (без near-full-дубля себя)
     if (sig.length === 0) {                       // ЛИСТ → это картинка или нет
       if (nodeId >= 0) { const cls = classify(px, w, { x0, y0, x1, y1 }, bg, tol); if (cls.image) { nodes[nodeId].image = true; nodes[nodeId].shape = "image"; } nodes[nodeId].colors = cls.colors; nodes[nodeId].edge = cls.edge; }
@@ -173,10 +215,8 @@ export function detect(buf, { maxW = 760, tol = 14, minAreaFrac = 0.0025, maxDep
 // темнее ОБОИХ соседей — тонкая линия/тень, даже если заливка того же цвета). Ищем такой столбец у
 // левого/правого края → отрезаем полосу от края до него как панель. Симметрично хедеру/футеру.
 export function sidePanels(buf, { maxW = 1577, minFrac = 0.5, wLo = 0.06, wHi = 0.4 } = {}) {
-  const { W, H, data } = asFrame(buf);
-  const s = Math.min(1, maxW / W), w = (W * s) | 0, h = (H * s) | 0;
-  const Lum = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4; Lum[y * w + x] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  const fr = asFrame(buf); const { W, H } = fr;
+  const { L: Lum, w, h, s } = buildLum(fr, maxW); // общий буфер яркости (тот же, что использует edgeRects)
   const span = h / 2 + 1, div = [];
   for (let x = 3; x < w - 3; x++) {
     let c = 0; for (let y = 0; y < h; y += 2) { const l = Lum[y * w + x]; if (l + 4 < Lum[y * w + x - 2] && l + 4 < Lum[y * w + x + 2]) c++; } // валли-столбец
@@ -196,29 +236,27 @@ export function sidePanels(buf, { maxW = 1577, minFrac = 0.5, wLo = 0.06, wHi = 
 // Так грань в 1px становится стеной. Фильтры: рамка опирается на стены (perim) + внутри крупная
 // ПУСТАЯ заливка (emptyFrac) → отсекаем жирный текст и рыхлые группы. Возвращает боксы в px скрина.
 export function edgeRects(buf, { maxW = 1577, T = 9, dil = 1, minSideCss = 34, perimMin = 0.5, emptyMin = 0.3 } = {}) {
-  const { W, H, data } = asFrame(buf);
-  const s = Math.min(1, maxW / W), w = (W * s) | 0, h = (H * s) | 0;
-  const L = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4; L[y * w + x] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  const { L, w, h, s } = buildLum(asFrame(buf), maxW); // общий буфер яркости (см. buildLum)
   let wall = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; wall[i] = ((x + 1 < w && Math.abs(L[i] - L[i + 1]) > T) || (y + 1 < h && Math.abs(L[i] - L[i + w]) > T) || (x > 0 && Math.abs(L[i] - L[i - 1]) > T) || (y > 0 && Math.abs(L[i] - L[i - w]) > T)) ? 1 : 0; }
-  for (let d = 0; d < dil; d++) { const nw = wall.slice(); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; if (!wall[i] && ((x + 1 < w && wall[i + 1]) || (x > 0 && wall[i - 1]) || (y + 1 < h && wall[i + w]) || (y > 0 && wall[i - w]))) nw[i] = 1; } wall = nw; } // дилатация: закрыть 1px щели в рамках
+  for (let d = 0; d < dil; d++) { const nw = new Uint8Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; nw[i] = (wall[i] || (x + 1 < w && wall[i + 1]) || (x > 0 && wall[i - 1]) || (y + 1 < h && wall[i + w]) || (y > 0 && wall[i - w])) ? 1 : 0; } wall = nw; } // дилатация: копия+дилат СЛИТЫ в один проход из ОРИГИНАЛА wall (без wall.slice())
   // НАЙТИ ЗАМКНУТЫЕ КАРМАНЫ внутри прямоугольника: заливаем «улицу»(фон) от ЕГО рамки по не-стенам;
   // всё, куда не дотекло (стены+нутро), = карманы (связные компоненты). Переиспользуем для РЕКУРСИИ
   // внутрь крупных карманов (колонка-контейнер) → находим вложенные под-карточки того же цвета.
   const findPockets = (rx0, ry0, rx1, ry1) => {
-    const seen = new Uint8Array(w * h), q = [];
-    const sd = (x, y) => { if (x < rx0 || x > rx1 || y < ry0 || y > ry1) return; const i = y * w + x; if (!wall[i] && !seen[i]) { seen[i] = 1; q.push(i); } };
-    for (let x = rx0; x <= rx1; x++) { sd(x, ry0); sd(x, ry1); }
-    for (let y = ry0; y <= ry1; y++) { sd(rx0, y); sd(rx1, y); }
-    let head = 0; while (head < q.length) { const p = q[head++], x = p % w, y = (p / w) | 0; sd(x + 1, y); sd(x - 1, y); sd(x, y + 1); sd(x, y - 1); }
-    const comp = new Uint8Array(w * h), out = [];
-    for (let sy = ry0; sy <= ry1; sy++) for (let sx = rx0; sx <= rx1; sx++) {
-      const s0 = sy * w + sx; if (seen[s0] || comp[s0]) continue;
-      const cq = [s0]; comp[s0] = 1; let hh = 0, x0 = sx, y0 = sy, x1 = sx, y1 = sy, area = 0;
-      while (hh < cq.length) { const p = cq[hh++], x = p % w, y = (p / w) | 0; area++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; const tN = (nx, ny) => { if (nx < rx0 || nx > rx1 || ny < ry0 || ny > ry1) return; const n = ny * w + nx; if (!seen[n] && !comp[n]) { comp[n] = 1; cq.push(n); } }; tN(x + 1, y); tN(x - 1, y); tN(x, y + 1); tN(x, y - 1); }
-      out.push({ x0, y0, x1, y1, area, fill: area / ((x1 - x0 + 1) * (y1 - y0 + 1)) });
-    }
+    // Фаза 1: УЛИЦА = не-стеновые компоненты, КАСАЮЩИЕСЯ рамки окна (= достижимы от края = фон). Раньше
+    // это была BFS-заливка от всех краёв; теперь run-CCL не-стены + пометка компонент с раном на границе.
+    const nw = runCCL(wall, rx0, ry0, rx1, ry1, w);
+    const border = new Set();
+    for (let i = 0; i < nw.n; i++) if (nw.rY[i] === ry0 || nw.rY[i] === ry1 || nw.rA[i] === rx0 || nw.rB[i] === rx1) border.add(nw.find(i));
+    const street = new Uint8Array(w * h);
+    for (let i = 0; i < nw.n; i++) if (border.has(nw.find(i))) { const yb = nw.rY[i] * w; for (let x = nw.rA[i]; x <= nw.rB[i]; x++) street[yb + x] = 1; }
+    // Фаза 2: КАРМАНЫ = компоненты НЕ-улицы (стены+замкнутое нутро). acc в порядке первого рана каждой
+    // компоненты = скан-порядок (сверху↓, слева→) = тот же порядок, что давала BFS → дедуп ниже идентичен.
+    const pk = runCCL(street, rx0, ry0, rx1, ry1, w);
+    const acc = new Map(), out = [];
+    for (let i = 0; i < pk.n; i++) { const r = pk.find(i), a = pk.rA[i], b = pk.rB[i], y = pk.rY[i]; let o = acc.get(r); if (!o) { o = { x0: a, y0: y, x1: b, y1: y, area: 0 }; acc.set(r, o); } else { if (a < o.x0) o.x0 = a; if (b > o.x1) o.x1 = b; if (y < o.y0) o.y0 = y; if (y > o.y1) o.y1 = y; } o.area += b - a + 1; }
+    for (const o of acc.values()) out.push({ x0: o.x0, y0: o.y0, x1: o.x1, y1: o.y1, area: o.area, fill: o.area / ((o.x1 - o.x0 + 1) * (o.y1 - o.y0 + 1)) });
     return out;
   };
   const boxes = findPockets(0, 0, w - 1, h - 1);
