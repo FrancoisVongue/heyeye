@@ -274,6 +274,50 @@ export function edgeRects(buf, { maxW = 1577, T = 9, dil = 1, minSideCss = 34, p
   return { W: Math.round(w / s), H: Math.round(h / s), rects: keep.map((c) => ({ box: [Math.round(c.x0 / s), Math.round(c.y0 / s), Math.round((c.x1 - c.x0) / s), Math.round((c.y1 - c.y0) / s)] })) };
 }
 
+// ИКОНКИ = мелкие компактные грань-КАРМАНЫ, которые edgeRects ОТБРАСЫВАЕТ (круглые аватары, play/меню/
+// лайк, поиск). Та же машинерия (buildLum@1577 + стены + two-phase runCCL, как в edgeRects), но карманы
+// оставляем в ИКОНОЧНОЙ размерной полосе + изоляция + внутр. структура, и классифицируем через classify()
+// (круг по углам, image по цвету). Дедуп/родитель — в perceive. Пороги в grid-px (≈CSS при dpr=2@1577).
+export function iconPass(src, { maxW = 1577, T = 9, dil = 1, tol = 14, cssMin = 12, cssMax = 72, minAspect = 0.45, minExtent = 0.3, ringMax = 0.15 } = {}) {
+  const fr = asFrame(src);
+  const { L, w, h, s } = buildLum(fr, maxW);            // общий с edgeRects (мемоизирован)
+  const { px } = loadScaled(fr, maxW);                  // RGB для classify/bgColor (тот же w/s → координаты сходятся)
+  let wall = new Uint8Array(w * h);                     // стены — как в edgeRects (T=9)
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; wall[i] = ((x + 1 < w && Math.abs(L[i] - L[i + 1]) > T) || (y + 1 < h && Math.abs(L[i] - L[i + w]) > T) || (x > 0 && Math.abs(L[i] - L[i - 1]) > T) || (y > 0 && Math.abs(L[i] - L[i - w]) > T)) ? 1 : 0; }
+  for (let d = 0; d < dil; d++) { const nwall = new Uint8Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; nwall[i] = (wall[i] || (x + 1 < w && wall[i + 1]) || (x > 0 && wall[i - 1]) || (y + 1 < h && wall[i + w]) || (y > 0 && wall[i - w])) ? 1 : 0; } wall = nwall; }
+  // карманы (как findPockets): улица = не-стена касающаяся рамки; карман = компонент не-улицы
+  const nw = runCCL(wall, 0, 0, w - 1, h - 1, w);
+  const border = new Set();
+  for (let i = 0; i < nw.n; i++) if (nw.rY[i] === 0 || nw.rY[i] === h - 1 || nw.rA[i] === 0 || nw.rB[i] === w - 1) border.add(nw.find(i));
+  const street = new Uint8Array(w * h);
+  for (let i = 0; i < nw.n; i++) if (border.has(nw.find(i))) { const yb = nw.rY[i] * w; for (let x = nw.rA[i]; x <= nw.rB[i]; x++) street[yb + x] = 1; }
+  const pk = runCCL(street, 0, 0, w - 1, h - 1, w);
+  const acc = new Map();
+  for (let i = 0; i < pk.n; i++) { const r = pk.find(i), a = pk.rA[i], b = pk.rB[i], y = pk.rY[i]; let o = acc.get(r); if (!o) { o = { x0: a, y0: y, x1: b, y1: y, area: 0 }; acc.set(r, o); } else { if (a < o.x0) o.x0 = a; if (b > o.x1) o.x1 = b; if (y < o.y0) o.y0 = y; if (y > o.y1) o.y1 = y; } o.area += b - a + 1; }
+  // изоляция: доля стен в кольце СНАРУЖИ bbox (верх/низ/лево, право пропускаем — там часто подпись)
+  const ringInk = (x0, y0, x1, y1) => { let c = 0, n = 0; const ck = (x, y) => { if (x < 0 || y < 0 || x >= w || y >= h) return; n++; if (wall[y * w + x]) c++; }; for (let d = 1; d <= 3; d++) { for (let x = x0 - d; x <= x1 + d; x++) { ck(x, y0 - d); ck(x, y1 + d); } for (let y = y0; y <= y1; y++) ck(x0 - d, y); } return c / (n || 1); };
+  const icons = [];
+  for (const o of acc.values()) {
+    const bw = o.x1 - o.x0 + 1, bh = o.y1 - o.y0 + 1, mn = Math.min(bw, bh), mx = Math.max(bw, bh);
+    if (mn < cssMin || mx > cssMax || mn / mx < minAspect) continue;      // размер + компактность
+    const extent = o.area / (bw * bh);
+    if (extent < minExtent) continue;                                    // не хайрлайн
+    if (ringInk(o.x0, o.y0, o.x1, o.y1) > ringMax) continue;              // окружён фоном (не буква в слове)
+    const bg = bgColor(px, w, h, o.x0, o.y0, o.x1, o.y1);
+    const cls = classify(px, w, { x0: o.x0, y0: o.y0, x1: o.x1, y1: o.y1 }, bg, tol);
+    if (!(cls.image || cls.edge >= 0.1 || (cls.shape !== "rect" && extent < 0.85))) continue; // есть внутр. структура
+    const cor = (x, y) => (x >= 0 && y >= 0 && x < w && y < h && street[y * w + x]) ? 1 : 0; // угол = УЛИЦА (снаружи фигуры) → скруглён
+    const roundC = cor(o.x0, o.y0) + cor(o.x1, o.y0) + cor(o.x0, o.y1) + cor(o.x1, o.y1);
+    const shape = (roundC >= 3 && mn / mx > 0.75) ? "circle" : (cls.image ? "image" : (cls.shape === "blob" ? "icon" : cls.shape));
+    icons.push({ box: [Math.round(o.x0 / s), Math.round(o.y0 / s), Math.round(bw / s), Math.round(bh / s)], shape, image: !!cls.image, area: bw * bh });
+  }
+  icons.sort((a, b) => b.area - a.area);                                  // self-дедуп по перекрытию
+  const ov = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (Math.min(a[2] * a[3], b[2] * b[3]) + 1e-9); };
+  const keep = [];
+  for (const ic of icons) { if (keep.some((k) => ov(ic.box, k.box) > 0.6)) continue; keep.push(ic); }
+  return { icons: keep.slice(0, 40) };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const path = process.argv[2] || "eye/shots/complex-clean.png", tol = parseFloat(process.argv[3] || "14"), maxDepth = parseInt(process.argv[4] || "3");
   const t = Date.now(); const r = detect(fs.readFileSync(path), { tol, maxDepth });
