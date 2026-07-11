@@ -152,7 +152,7 @@ export async function perceive(buf, p) {
     const iouI = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a[2] * a[3] + b[2] * b[3] - i + 1e-9); };
     const added = [];
     for (const b of I.iconPass(frame).icons) {
-      const dup = nodes.some((n) => { const o = ovl(b.box, n.box); if (o < 0.3) return false; if (n.shape === "text" || n.shape === "button") return o > 0.45; if (n.image) return o > 0.55; return iouI(b.box, n.box) > 0.5; });
+      const dup = nodes.some((n) => { if (n.shape === "text" || n.shape === "button") return iouI(b.box, n.box) > 0.4; const o = ovl(b.box, n.box); if (o < 0.3) return false; if (n.image) return o > 0.55; return iouI(b.box, n.box) > 0.5; });
       if (dup) continue;
       const node = { id: id++, parent: -1, shape: b.shape, image: b.image, depth: 0, box: b.box };
       nodes.push(node); added.push(node);

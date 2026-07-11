@@ -303,11 +303,21 @@ export function iconPass(src, { maxW = 1577, T = 9, dil = 1, extraDil = 2, tol =
     if (ringInk(o.x0, o.y0, o.x1, o.y1) > ringMax) continue;              // окружён фоном (не буква в слове)
     const bg = bgColor(px, w, h, o.x0, o.y0, o.x1, o.y1);
     const cls = classify(px, w, { x0: o.x0, y0: o.y0, x1: o.x1, y1: o.y1 }, bg, tol);
-    const cor = (x, y) => (x >= 0 && y >= 0 && x < w && y < h && !dilW[y * w + x]) ? 1 : 0; // угол ВНЕ блоба → снаружи фигуры
-    const roundC = cor(o.x0, o.y0) + cor(o.x1, o.y0) + cor(o.x0, o.y1) + cor(o.x1, o.y1);
-    // КРУГ = ДИСК: все 4 угла пусты + КВАДРАТНЫЙ bbox + заполнение блоба как у круга (π/4≈0.78). Так клэппер/
-    // прочие «углы-пустые-но-не-круг» не попадают в circle. Остальное компактное = image (фото) или generic icon.
-    const round = roundC >= 3 && mn / mx > 0.82 && extent >= 0.55 && extent <= 0.92;
+    // Круг/глиф отличаем по СОДЕРЖИМОМУ (far от локального фона), а НЕ по блобу граней: у ФОТО-аватара грани
+    // внутри везде → блоб заливает весь bbox (углы тоже), но САМО содержимое = диск (углы = фон снаружи диска).
+    // ОКРУЖАЮЩИЙ фон = мода кольца СНАРУЖИ bbox (не рамка самого bbox — у тесного диска рамка = сам диск-фото)
+    const sbg = bgColor(px, w, h, Math.max(0, o.x0 - 4), Math.max(0, o.y0 - 4), Math.min(w - 1, o.x1 + 4), Math.min(h - 1, o.y1 + 4));
+    const inb = (x, y) => x >= 0 && y >= 0 && x < w && y < h;
+    const farAt = (x, y) => { if (!inb(x, y)) return 1; const j = (y * w + x) * 3; return (Math.abs(px[j] - sbg[0]) > tol || Math.abs(px[j + 1] - sbg[1]) > tol || Math.abs(px[j + 2] - sbg[2]) > tol) ? 1 : 0; };
+    const ins = Math.max(2, mn * 0.12) | 0;                                // проба чуть внутрь от угла
+    const cornerBg = (1 - farAt(o.x0 + ins, o.y0 + ins)) + (1 - farAt(o.x1 - ins, o.y0 + ins)) + (1 - farAt(o.x0 + ins, o.y1 - ins)) + (1 - farAt(o.x1 - ins, o.y1 - ins)); // все 4 угла = ФОН?
+    let fc = 0, ft = 0;                                                    // заполнение содержимым: диск~0.78, глиф~0.3
+    for (let yy = o.y0; yy <= o.y1; yy += 2) for (let xx = o.x0; xx <= o.x1; xx += 2) { ft++; if (farAt(xx, yy)) fc++; }
+    const contentFill = fc / (ft || 1);
+    // КРУГ = ДИСК: содержимое НЕ доходит до 4 углов (углы = фон) + КВАДРАТ + заполнено как диск (0.35..0.85).
+    // Так аватары (square, углы-фон, fill~0.45-0.78) = circle, а бургер (fill~0.19), палец/chevron (тонкие,
+    // fill<0.35), залитый квадрат (fill~1) — НЕ диск → generic icon.
+    const round = cornerBg === 4 && mn / mx > 0.85 && contentFill >= 0.35 && contentFill <= 0.85;
     const shape = round ? "circle" : (cls.image ? "image" : "icon");
     icons.push({ box: [Math.round(o.x0 / s), Math.round(o.y0 / s), Math.round(bw / s), Math.round(bh / s)], shape, image: !!cls.image, area: bw * bh });
   }
