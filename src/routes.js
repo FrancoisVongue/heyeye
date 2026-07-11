@@ -97,6 +97,15 @@ export async function perceive(buf, p) {
   for (const im of images) nodes.push({ id: id++, parent: -1, shape: "image", image: true, depth: 0, box: im.box });
   for (const c of regions) nodes.push({ id: id++, parent: -1, shape: c.shape, image: false, depth: 0, box: c.box });
   for (const b of blocks) nodes.push({ id: id++, parent: -1, shape: b.shape === "button" ? "button" : "text", image: false, depth: 0, box: b.box, text: b.text });
+  // ГИБРИД зернистости: блок-ряд/колонка остаётся для ЧТЕНИЯ, а его под-элементы (каждый чип, канал,
+  // пункт меню) эмитим ОТДЕЛЬНЫМИ text-узлами → вложенность ниже делает их детьми блока, ИИ может
+  // кликнуть конкретный по id. Текст внутри картинки пропускаем. Дубля нет: дети строго меньше блока.
+  const iouB = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a[2] * a[3] + b[2] * b[3] - i + 1e-9); };
+  for (const wd of (tg.words || [])) {                                   // сырые OCR-сегменты = каждый чип/канал/строка
+    if (images.some((im) => ovl(wd.box, im.box) > 0.55)) continue;        // текст на картинке — пропуск
+    if (nodes.some((n) => n.text && iouB(n.box, wd.box) > 0.8)) continue; // сегмент САМ уже стал блоком → не дубль
+    nodes.push({ id: id++, parent: -1, shape: "text", image: false, depth: 0, box: wd.box, text: wd.text });
+  }
   let mode = "regions+text";
   if (blocks.length < 4 && regions.length < 3) {                        // текста нет (нарисован картинкой) → XY-фолбэк
     const X = await fresh("./xycut.js"); const xr = X.cut(buf, { gapFrac: 0.011 });

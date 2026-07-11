@@ -66,7 +66,7 @@ export async function textBlocks(buf, { conf = 40 } = {}) {
   }
   const cols = new Map(); fin.forEach((b, i) => { const r = vu.f(i); (cols.get(r) || cols.set(r, []).get(r)).push(b); });
   fin = [...cols.values()].map((g) => g.length === 1 ? g[0] : { box: bboxOf(g), lines: g.reduce((s, x) => s + x.lines, 0), size: g[0].size, text: g.map((x) => x.text).join(" ") });
-  return { W, H, blocks: fin };
+  return { W, H, blocks: fin, words: wd }; // words = сырые OCR-сегменты (каждый чип/канал/строка) для гибрид-детей
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
