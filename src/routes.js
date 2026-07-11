@@ -76,15 +76,23 @@ function treeText(nodes, dpr, maxD = 99) {
 
 // ОБЩИЙ АЛГОРИТМ: КАПЛЯ (картинки + цветные контейнеры) + ТЕКСТ (блоки по размеру, Apple Vision).
 // XY-cut — только тихий последний ФОЛБЭК, если текста почти нет (текст отрисован картинкой).
-async function perceive(buf, p) {
+export async function perceive(buf, p) {
   const [I, TG] = await Promise.all([fresh("./islands.js"), fresh("./textgroup.js")]);
-  const r = I.detect(buf, { tol: +(p.get("tol") || 12), maxDepth: +(p.get("maxDepth") || 3) });
-  let tg = { blocks: [] }; try { if (p.get("text") !== "0") tg = await TG.textBlocks(buf); } catch (e) { /* нет OCR-бинаря */ }
+  const frame = I.decodeFrame(buf);            // PNG декодируем ОДИН раз → сырой RGBA, дальше все стадии берут его
+  // OCR (Vision, ~430мс) запускаем СРАЗУ и АСИНХРОННО — он в отдельном процессе (Neural Engine), пока
+  // главный поток считает CV (капля/грань/панели). Забираем результат позже → OCR прячется ПОД CV.
+  const ocrP = p.get("text") !== "0" ? TG.textBlocks(buf).catch(() => ({ blocks: [] })) : Promise.resolve({ blocks: [] });
+  const r = I.detect(frame, { tol: +(p.get("tol") || 12), maxDepth: +(p.get("maxDepth") || 3) });
   const images = r.nodes.filter((n) => n.image);
   const regions = r.nodes.filter((n) => !n.image && n.shape !== "surface" && n.depth <= 1 && n.box[2] * n.box[3] > 0.004 * r.W * r.H);
+  // грань-карточки и боковые панели зависят ТОЛЬКО от кадра → считаем их тоже ДО ожидания OCR (под OCR)
+  const canvasy = regions.length <= 2 && images.length === 0;
+  let erRects = [], spPanels = [];
+  try { erRects = I.edgeRects(frame, canvasy ? { perimMin: 0.4, emptyMin: 0.1 } : {}).rects; spPanels = I.sidePanels(frame).panels; } catch (e) {}
+  const tg = await ocrP;                        // забираем OCR (крутился параллельно — уже почти готов)
   // текст ВНУТРИ картинки (OCR-мусор на фото) выкидываем ДО solidify, чтобы он не стал ложной «кнопкой»
   let blocks = tg.blocks.filter((b) => !images.some((im) => ovl(b.box, im.box) > 0.55));
-  try { const B = await fresh("./buttons.js"); blocks = B.solidify(buf, blocks); } catch (e) {}
+  try { const B = await fresh("./buttons.js"); blocks = B.solidify(frame, blocks); } catch (e) {}
   const nodes = []; let id = 0;
   for (const im of images) nodes.push({ id: id++, parent: -1, shape: "image", image: true, depth: 0, box: im.box });
   for (const c of regions) nodes.push({ id: id++, parent: -1, shape: c.shape, image: false, depth: 0, box: c.box });
@@ -95,6 +103,17 @@ async function perceive(buf, p) {
     for (const bx of xr.blocks) if (!nodes.some((n) => ovl(bx, n.box) > 0.5)) nodes.push({ id: id++, parent: -1, shape: "block", image: false, depth: 0, box: bx });
     mode = "regions+xy(fallback)";
   }
+  // ГРАНЬ-КАРТОЧКИ (карманы цвета холста) + БОКОВЫЕ ПАНЕЛИ уже посчитаны ВЫШЕ (под OCR). Добавляем
+  // ТОЛЬКО новые: дубль = ТОТ ЖЕ бокс (IoU), а не «содержит мелкий текст» (иначе карточка выкинулась бы
+  // из-за своей же подписи). На обычных сайтах карточки уже пойманы по цвету → тут IoU-дубль → пропуск.
+  try {
+    const iou = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a[2] * a[3] + b[2] * b[3] - i + 1e-9); };
+    for (const c of erRects.concat(spPanels)) {
+      if (c.box[2] * c.box[3] > 0.6 * r.W * r.H) continue;                // не вся страница/большой фон
+      if (nodes.some((n) => iou(c.box, n.box) > 0.55)) continue;          // уже есть (тот же контейнер по цвету)
+      nodes.push({ id: id++, parent: -1, shape: "rect", image: false, depth: 0, box: c.box });
+    }
+  } catch (e) {}
   // ВЛОЖЕННОСТЬ: parent = НАИМЕНЬШИЙ узел, содержащий этот; depth = длина цепочки родителей.
   const A = (x) => x[2] * x[3], has = (P, c) => P.box[0] <= c.box[0] + 3 && P.box[1] <= c.box[1] + 3 && P.box[0] + P.box[2] >= c.box[0] + c.box[2] - 3 && P.box[1] + P.box[3] >= c.box[1] + c.box[3] - 3 && A(P.box) > A(c.box) * 1.05;
   for (const n of nodes) { let best = -1, ba = Infinity; for (const m of nodes) if (m.id !== n.id && has(m, n)) { const a = A(m.box); if (a < ba) { ba = a; best = m.id; } } n.parent = best; }
@@ -110,8 +129,9 @@ async function perceive(buf, p) {
     if (g.length < 2) continue;
     let x0 = Math.min(...g.map((n) => n.box[0])), y0 = Math.min(...g.map((n) => n.box[1])), x1 = Math.max(...g.map((n) => n.box[0] + n.box[2])), y1 = Math.max(...g.map((n) => n.box[1] + n.box[3]));
     if (x1 - x0 < 0.4 * r.W) continue;                                  // ряд должен быть ШИРОКИМ (это бар, а не пара кнопок)
-    if (y0 < 0.05 * r.H) { x0 = 0; y0 = 0; x1 = r.W; }                  // ТОП-бар (хедер) — во всю ширину от самого верха
-    else if (y1 > 0.95 * r.H) { x0 = 0; x1 = r.W; y1 = r.H; }           // футер — во всю ширину до низа
+    if (y0 < 0.08 * r.H) { x0 = 0; y0 = 0; x1 = r.W; }                  // ТОП-бар (хедер) — во всю ширину от самого верха
+    else if (y1 > 0.92 * r.H) { x0 = 0; x1 = r.W; y1 = r.H; }           // футер — во всю ширину до низа
+    else continue;                                                     // ряд В СЕРЕДИНЕ страницы — это НЕ бар (напр. карточки на канвасе Piano, случайно на одной высоте) — не оборачиваем
     const bar = { id: id++, parent: -1, shape: "bar", image: false, box: [x0, y0, x1 - x0, y1 - y0] };
     nodes.push(bar); bars.push(bar); for (const n of g) n.parent = bar.id;
   }
@@ -119,15 +139,17 @@ async function perceive(buf, p) {
   // мелкие иконки/кнопки (тонкие структуры исчезают при сжатии). Поэтому КАЖДЫЙ крупный контейнер
   // верхнего уровня перепроверяем в НАТИВНОМ разрешении и добираем мелкие компактные элементы,
   // которых там ещё нет. Работает на любом контейнере любого сайта (сайдбар, карточка, тулбар…).
-  const V = await fresh("./vision.js"), PAGE = r.W * r.H;
+  const PAGE = r.W * r.H;
   // каждый КРУПНЫЙ контейнер (>3% страницы, но не вся) детализируем ВНУТРИ в НАТИВНОМ разрешении.
   // minArea теперь ОТНОСИТЕЛЬНО КОНТЕЙНЕРА (крутим islands на кропе) → иконка мелкая на странице,
   // но нормальная в своём контейнере → проходит и добавляется. Ровно то правило.
   const conts = nodes.filter((n) => !n.image && n.shape !== "surface" && n.shape !== "text" && n.shape !== "button" && A(n.box) > 0.03 * PAGE && A(n.box) < 0.7 * PAGE).sort((a, b) => A(a.box) - A(b.box)).slice(0, 20);
   for (const cont of conts) {
     try {
-      const { buf: crop, back } = V.cropScale(buf, cont.box, 1); // нативно (тонкие детали иконок не теряются)
-      const sub = I.detect(crop, { tol: 12, maxDepth: 1, minAreaFrac: 0.006, maxW: Math.min(2600, cont.box[2]) });
+      const [cx, cy, cw, ch] = cont.box;
+      const crop = I.cropFrame(frame, cx, cy, cw, ch);           // СРЕЗ сырых пикселей (без декода/энкода PNG)
+      const sub = I.detect(crop, { tol: 12, maxDepth: 1, minAreaFrac: 0.006, maxW: Math.min(2600, cw) });
+      const back = (b) => [b[0] + cx, b[1] + cy, b[2], b[3]];    // detect на нативном кропе → просто сдвиг координат
       for (const s of sub.nodes) {
         if (s.shape === "surface") continue;
         const b = back(s.box);

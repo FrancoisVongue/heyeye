@@ -1,6 +1,6 @@
 // OCR через Apple Vision (Neural Engine/GPU, on-device, ~10× быстрее tesseract, без Python).
 // Тот же интерфейс, что был у ocr.js: ocr()/cropScale()/readRegion(). Зовём нативный бинарь.
-import { execFileSync } from "node:child_process";
+import { execFileSync, execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,21 @@ export function ocr(pngBuffer, { fast = false } = {}) {
     const r = JSON.parse(out.toString());
     return { W: r.width, H: r.height, lines: r.lines || [], words: r.words || [] };
   } finally { try { fs.unlinkSync(tmp); } catch {} }
+}
+
+// АСИНХРОННЫЙ OCR: бинарь крутится в отдельном процессе (Neural Engine), не блокируя главный поток —
+// можно параллелить с CV. Тот же выход, что ocr(). При ошибке — пустой результат (graceful).
+export function ocrAsync(pngBuffer, { fast = false } = {}) {
+  return new Promise((resolve) => {
+    const tmp = path.join(os.tmpdir(), `eye-ocr-${process.pid}-${pngBuffer.length}.png`);
+    try { fs.writeFileSync(tmp, pngBuffer); } catch { return resolve({ W: 0, H: 0, lines: [], words: [] }); }
+    execFile(BIN, fast ? [tmp, "fast"] : [tmp], { maxBuffer: 128 * 1024 * 1024 }, (err, stdout) => {
+      try { fs.unlinkSync(tmp); } catch {}
+      if (err) return resolve({ W: 0, H: 0, lines: [], words: [] });
+      try { const r = JSON.parse(stdout.toString()); resolve({ W: r.width, H: r.height, lines: r.lines || [], words: r.words || [] }); }
+      catch { resolve({ W: 0, H: 0, lines: [], words: [] }); }
+    });
+  });
 }
 
 // вырезать регион и увеличить (фовеально) → буфер + обратный пересчёт координат

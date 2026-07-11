@@ -6,8 +6,14 @@
 import { PNG } from "pngjs";
 import fs from "node:fs";
 
-function loadScaled(buf, maxW) {
-  const png = PNG.sync.read(buf); const { width: W, height: H, data } = png;
+// ОДНО внутреннее представление кадра: декодируем PNG РАЗ → сырой RGBA. Дальше все стадии берут его,
+// а не передекодируют картинку по 12 раз. cropFrame = срез буфера (фовеа без декода/энкода).
+export function decodeFrame(buf) { const { width: W, height: H, data } = PNG.sync.read(buf); return { W, H, data }; }
+export function cropFrame(f, x, y, bw, bh) { x = Math.max(0, x | 0); y = Math.max(0, y | 0); bw = Math.min(bw | 0, f.W - x); bh = Math.min(bh | 0, f.H - y); const out = new Uint8Array(bw * bh * 4); for (let yy = 0; yy < bh; yy++) { const so = ((y + yy) * f.W + x) * 4; out.set(f.data.subarray(so, so + bw * 4), yy * bw * 4); } return { W: bw, H: bh, data: out }; }
+const asFrame = (src) => (src && src.data && src.W ? src : decodeFrame(src)); // принимаем кадр ИЛИ буфер
+
+function loadScaled(src, maxW) {
+  const { W, H, data } = asFrame(src);
   const s = Math.min(1, maxW / W), w = Math.max(1, Math.round(W * s)), h = Math.max(1, Math.round(H * s));
   const px = new Uint8Array(w * h * 3);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4, j = (y * w + x) * 3; px[j] = data[i]; px[j + 1] = data[i + 1]; px[j + 2] = data[i + 2]; }
@@ -159,6 +165,75 @@ export function detect(buf, { maxW = 760, tol = 14, minAreaFrac = 0.0025, maxDep
   nodes.forEach((n) => { if (n.depth == null) { let d = 0, p = n.parent; while (p >= 0) { d++; p = nodes[p].parent; } n.depth = d; } }); // глубина по цепочке (индекс=id)
   const removed = mergeImageNodes(nodes);         // слить соседние картинки-осколки одного фото
   return { W: Math.round(w / s), H: Math.round(h / s), nodes: nodes.filter((n) => !removed.has(n.id)) };
+}
+
+// БОКОВЫЕ ПАНЕЛИ (сайдбары) — вертикальный аналог hDividers. Сайдбар ПРИКЛЕЕН к краю экрана, поэтому
+// и капля-по-цвету, и edgeRects (заливка от рамки) считают его ФОНОМ, а не регионом — фон дотекает до
+// него от края, не пересекая границу. Но у сайдбара есть полная вертикальная граница-ВАЛЛИ (столбец
+// темнее ОБОИХ соседей — тонкая линия/тень, даже если заливка того же цвета). Ищем такой столбец у
+// левого/правого края → отрезаем полосу от края до него как панель. Симметрично хедеру/футеру.
+export function sidePanels(buf, { maxW = 1577, minFrac = 0.5, wLo = 0.06, wHi = 0.4 } = {}) {
+  const { W, H, data } = asFrame(buf);
+  const s = Math.min(1, maxW / W), w = (W * s) | 0, h = (H * s) | 0;
+  const Lum = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4; Lum[y * w + x] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  const span = h / 2 + 1, div = [];
+  for (let x = 3; x < w - 3; x++) {
+    let c = 0; for (let y = 0; y < h; y += 2) { const l = Lum[y * w + x]; if (l + 4 < Lum[y * w + x - 2] && l + 4 < Lum[y * w + x + 2]) c++; } // валли-столбец
+    if (c / span > minFrac) { if (div.length && x - div[div.length - 1] <= 3) continue; div.push(x); }
+  }
+  const panels = [];
+  const left = div.find((x) => x >= wLo * w && x <= wHi * w);
+  if (left) panels.push([0, 0, Math.round(left / s), H]);                         // левый сайдбар: от края до разделителя
+  const right = [...div].reverse().find((x) => x >= (1 - wHi) * w && x <= (1 - wLo) * w);
+  if (right) panels.push([Math.round(right / s), 0, W - Math.round(right / s), H]); // правый рельс
+  return { panels: panels.map((b) => ({ box: b })) };
+}
+
+// КАПЛЯ-ФОН УПИРАЕТСЯ В ГРАНИ. Карточки ТОГО ЖЕ цвета, что холст (напр. канвас Piano), фигура-фон по
+// ЦВЕТУ не видит — их отделяет лишь тонкая грань-рамка (1px). Заливаем «фон» от рамки экрана, НЕ
+// пересекая грани-стены; куда фон НЕ добрался — замкнутые карманы (рамка+нутро связны) = карточки.
+// Так грань в 1px становится стеной. Фильтры: рамка опирается на стены (perim) + внутри крупная
+// ПУСТАЯ заливка (emptyFrac) → отсекаем жирный текст и рыхлые группы. Возвращает боксы в px скрина.
+export function edgeRects(buf, { maxW = 1577, T = 9, dil = 1, minSideCss = 34, perimMin = 0.5, emptyMin = 0.3 } = {}) {
+  const { W, H, data } = asFrame(buf);
+  const s = Math.min(1, maxW / W), w = (W * s) | 0, h = (H * s) | 0;
+  const L = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4; L[y * w + x] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  let wall = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; wall[i] = ((x + 1 < w && Math.abs(L[i] - L[i + 1]) > T) || (y + 1 < h && Math.abs(L[i] - L[i + w]) > T) || (x > 0 && Math.abs(L[i] - L[i - 1]) > T) || (y > 0 && Math.abs(L[i] - L[i - w]) > T)) ? 1 : 0; }
+  for (let d = 0; d < dil; d++) { const nw = wall.slice(); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; if (!wall[i] && ((x + 1 < w && wall[i + 1]) || (x > 0 && wall[i - 1]) || (y + 1 < h && wall[i + w]) || (y > 0 && wall[i - w]))) nw[i] = 1; } wall = nw; } // дилатация: закрыть 1px щели в рамках
+  // НАЙТИ ЗАМКНУТЫЕ КАРМАНЫ внутри прямоугольника: заливаем «улицу»(фон) от ЕГО рамки по не-стенам;
+  // всё, куда не дотекло (стены+нутро), = карманы (связные компоненты). Переиспользуем для РЕКУРСИИ
+  // внутрь крупных карманов (колонка-контейнер) → находим вложенные под-карточки того же цвета.
+  const findPockets = (rx0, ry0, rx1, ry1) => {
+    const seen = new Uint8Array(w * h), q = [];
+    const sd = (x, y) => { if (x < rx0 || x > rx1 || y < ry0 || y > ry1) return; const i = y * w + x; if (!wall[i] && !seen[i]) { seen[i] = 1; q.push(i); } };
+    for (let x = rx0; x <= rx1; x++) { sd(x, ry0); sd(x, ry1); }
+    for (let y = ry0; y <= ry1; y++) { sd(rx0, y); sd(rx1, y); }
+    let head = 0; while (head < q.length) { const p = q[head++], x = p % w, y = (p / w) | 0; sd(x + 1, y); sd(x - 1, y); sd(x, y + 1); sd(x, y - 1); }
+    const comp = new Uint8Array(w * h), out = [];
+    for (let sy = ry0; sy <= ry1; sy++) for (let sx = rx0; sx <= rx1; sx++) {
+      const s0 = sy * w + sx; if (seen[s0] || comp[s0]) continue;
+      const cq = [s0]; comp[s0] = 1; let hh = 0, x0 = sx, y0 = sy, x1 = sx, y1 = sy, area = 0;
+      while (hh < cq.length) { const p = cq[hh++], x = p % w, y = (p / w) | 0; area++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; const tN = (nx, ny) => { if (nx < rx0 || nx > rx1 || ny < ry0 || ny > ry1) return; const n = ny * w + nx; if (!seen[n] && !comp[n]) { comp[n] = 1; cq.push(n); } }; tN(x + 1, y); tN(x - 1, y); tN(x, y + 1); tN(x, y - 1); }
+      out.push({ x0, y0, x1, y1, area, fill: area / ((x1 - x0 + 1) * (y1 - y0 + 1)) });
+    }
+    return out;
+  };
+  const boxes = findPockets(0, 0, w - 1, h - 1);
+  const onWall = (x, y) => { for (let d = -2; d <= 2; d++) { if (x + d >= 0 && x + d < w && wall[y * w + x + d]) return 1; if (y + d >= 0 && y + d < h && wall[(y + d) * w + x]) return 1; } return 0; };
+  const perim = (b) => { let c = 0, n = 0; for (let x = b.x0; x <= b.x1; x += 2) { n += 2; c += onWall(x, b.y0); c += onWall(x, b.y1); } for (let y = b.y0; y <= b.y1; y += 2) { n += 2; c += onWall(b.x0, y); c += onWall(b.x1, y); } return c / (n || 1); };
+  const emptyFrac = (b) => { const ix0 = b.x0 + 4, iy0 = b.y0 + 4, ix1 = b.x1 - 4, iy1 = b.y1 - 4; if (ix1 <= ix0 || iy1 <= iy0) return 0; const bw = ix1 - ix0 + 1, seenL = new Uint8Array(bw * (iy1 - iy0 + 1)); let best = 0; const st = []; for (let sy = iy0; sy <= iy1; sy++) for (let sx = ix0; sx <= ix1; sx++) { const li = (sy - iy0) * bw + (sx - ix0); if (seenL[li] || wall[sy * w + sx]) continue; st.length = 0; st.push(sx, sy); seenL[li] = 1; let a = 0; while (st.length) { const y = st.pop(), x = st.pop(); a++; const tN = (nx, ny) => { if (nx < ix0 || nx > ix1 || ny < iy0 || ny > iy1) return; const l = (ny - iy0) * bw + (nx - ix0); if (!seenL[l] && !wall[ny * w + nx]) { seenL[l] = 1; st.push(nx, ny); } }; tN(x + 1, y); tN(x - 1, y); tN(x, y + 1); tN(x, y - 1); } if (a > best) best = a; } return best / (bw * (iy1 - iy0 + 1)); };
+  const minSide = minSideCss * s;
+  let cards = boxes.filter((b) => (b.x1 - b.x0) > minSide && (b.y1 - b.y0) > minSide && b.area > (44 * 44) * s * s && b.fill > 0.5);
+  cards = cards.filter((b) => perim(b) > perimMin && emptyFrac(b) > emptyMin);
+  cards.sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0));
+  // дедуп: убрать почти-совпадающие (IoU), но ОСТАВИТЬ вложенные под-карточки (колонка ⊃ карточки — низкий IoU)
+  const iou = (a, b) => { const x0 = Math.max(a.x0, b.x0), y0 = Math.max(a.y0, b.y0), x1 = Math.min(a.x1, b.x1), y1 = Math.min(a.y1, b.y1); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0), ua = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - i; return i / (ua + 1e-9); };
+  const keep = [];
+  for (const c of cards) { if (keep.some((k) => iou(c, k) > 0.7)) continue; keep.push(c); }
+  return { W: Math.round(w / s), H: Math.round(h / s), rects: keep.map((c) => ({ box: [Math.round(c.x0 / s), Math.round(c.y0 / s), Math.round((c.x1 - c.x0) / s), Math.round((c.y1 - c.y0) / s)] })) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

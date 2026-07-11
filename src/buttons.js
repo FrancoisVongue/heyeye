@@ -5,8 +5,9 @@ import { PNG } from "pngjs";
 
 const dist = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
 
-export function solidify(buf, blocks, { cap = 60 } = {}) {
-  const png = PNG.sync.read(buf); const { width: W, height: H, data } = png;
+export function solidify(src, blocks, { cap = 60 } = {}) {
+  const f = src && src.data && src.W ? src : PNG.sync.read(src);   // общий кадр ИЛИ буфер (без лишнего декода)
+  const W = f.W ?? f.width, H = f.H ?? f.height, data = f.data;
   const at = (x, y) => { const i = ((y < 0 ? 0 : y >= H ? H - 1 : y) * W + (x < 0 ? 0 : x >= W ? W - 1 : x)) * 4; return [data[i], data[i + 1], data[i + 2]]; };
   // фон страницы = мода по рамке (квант 4 бита)
   const hist = new Map(); const bump = (x, y) => { const c = at(x, y), k = (c[0] >> 4 << 8) | (c[1] >> 4 << 4) | c[2] >> 4; hist.set(k, (hist.get(k) || 0) + 1); };
