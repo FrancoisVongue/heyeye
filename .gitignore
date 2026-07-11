@@ -16,3 +16,6 @@ page/snap-*.html
 bin/vision-ocr
 
 .DS_Store
+
+# generated overlay pages (embed base64 screenshots)
+page/perceived*.html
