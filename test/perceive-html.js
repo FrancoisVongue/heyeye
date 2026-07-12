@@ -4,11 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { perceive } from "../src/routes.js";
 
-const COL = { button: "#f59e0b", text: "#0ea5b7", block: "#0891b2", bar: "#ff5a00", image: "#e614c8", surface: "#f0a014", rect: "#16a34a", "round-rect": "#2f6bff", circle: "#e11d48", blob: "#a44bff" };
+const COL = { button: "#f59e0b", text: "#0ea5b7", block: "#0891b2", bar: "#ff5a00", image: "#e614c8", surface: "#f0a014", rect: "#16a34a", "round-rect": "#2f6bff", circle: "#e11d48", icon: "#ff8c00", blob: "#a44bff" };
 const src = process.argv[2] || "eye/shots/clean-piano.png";
 const buf = fs.readFileSync(src);
 const r = await perceive(buf, new URLSearchParams(""));
-const dpr = 2;                                   // скрин Retina 2x → css = px/2
+const dpr = +(process.argv[3] || 2);             // скрин Retina 2x → css = px/2; для 1:1 десктоп-скринов передать 1
 const cssW = Math.round(r.W / dpr), cssH = Math.round(r.H / dpr);
 const by = {}; for (const n of r.nodes) by[n.shape] = (by[n.shape] || 0) + 1;
 const boxes = r.nodes.map((n) => {

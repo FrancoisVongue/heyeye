@@ -26,6 +26,17 @@ function buildLum(frame, maxW) {
   m = { L, w, h, s, maxW }; _lumCache.set(frame, m); return m;
 }
 
+// КАРТА ГРАНЕЙ (|Δлум|>T) — СЫРАЯ (до дилатации), мемоизирована по кадру. edgeRects и iconPass строили её
+// ОТДЕЛЬНО (одинаково, T=9) — теперь строим РАЗ. Оба берут raw и дилатируют СВОЮ копию (не мутируя raw).
+const _wallCache = new WeakMap();
+function buildWall(frame, maxW, T) {
+  let c = _wallCache.get(frame); if (c && c.maxW === maxW && c.T === T) return c;
+  const { L, w, h, s } = buildLum(frame, maxW);
+  const raw = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; raw[i] = ((x + 1 < w && Math.abs(L[i] - L[i + 1]) > T) || (y + 1 < h && Math.abs(L[i] - L[i + w]) > T) || (x > 0 && Math.abs(L[i] - L[i - 1]) > T) || (y > 0 && Math.abs(L[i] - L[i - w]) > T)) ? 1 : 0; }
+  c = { raw, w, h, s, maxW, T }; _wallCache.set(frame, c); return c;
+}
+
 // RUN-LENGTH + UNION-FIND СВЯЗНЫЕ КОМПОНЕНТЫ (замена BFS-заливок): пиксели где src[i]==0, внутри окна,
 // 4-связность. Строки → горизонтальные раны; ран [a,b] на строке y объединяется с раном [c,d] на y-1
 // ТОЧНО при перекрытии a<=d && c<=b (= 4-связность по вертикали, тот же набор, что BFS-соседи ±1). Возвращает
@@ -236,9 +247,8 @@ export function sidePanels(buf, { maxW = 1577, minFrac = 0.5, wLo = 0.06, wHi = 
 // Так грань в 1px становится стеной. Фильтры: рамка опирается на стены (perim) + внутри крупная
 // ПУСТАЯ заливка (emptyFrac) → отсекаем жирный текст и рыхлые группы. Возвращает боксы в px скрина.
 export function edgeRects(buf, { maxW = 1577, T = 9, dil = 1, minSideCss = 34, perimMin = 0.5, emptyMin = 0.3 } = {}) {
-  const { L, w, h, s } = buildLum(asFrame(buf), maxW); // общий буфер яркости (см. buildLum)
-  let wall = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; wall[i] = ((x + 1 < w && Math.abs(L[i] - L[i + 1]) > T) || (y + 1 < h && Math.abs(L[i] - L[i + w]) > T) || (x > 0 && Math.abs(L[i] - L[i - 1]) > T) || (y > 0 && Math.abs(L[i] - L[i - w]) > T)) ? 1 : 0; }
+  const { raw, w, h, s } = buildWall(asFrame(buf), maxW, T); // общая мемоизированная карта граней (см. buildWall)
+  let wall = raw;                                            // дилатация ниже читает raw и создаёт КОПИИ (raw не мутируется → делится с iconPass)
   for (let d = 0; d < dil; d++) { const nw = new Uint8Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; nw[i] = (wall[i] || (x + 1 < w && wall[i + 1]) || (x > 0 && wall[i - 1]) || (y + 1 < h && wall[i + w]) || (y > 0 && wall[i - w])) ? 1 : 0; } wall = nw; } // дилатация: копия+дилат СЛИТЫ в один проход из ОРИГИНАЛА wall (без wall.slice())
   // НАЙТИ ЗАМКНУТЫЕ КАРМАНЫ внутри прямоугольника: заливаем «улицу»(фон) от ЕГО рамки по не-стенам;
   // всё, куда не дотекло (стены+нутро), = карманы (связные компоненты). Переиспользуем для РЕКУРСИИ
@@ -281,10 +291,8 @@ export function edgeRects(buf, { maxW = 1577, T = 9, dil = 1, minSideCss = 34, p
 // (дедуп в perceive). Круг = ≥3 из 4 углов bbox ВНЕ блоба. Нераспознанное компактное = generic `icon`.
 export function iconPass(src, { maxW = 1577, T = 9, dil = 1, extraDil = 2, tol = 14, cssMin = 12, cssMax = 72, minAspect = 0.45, minExtent = 0.22, ringMax = 0.2 } = {}) {
   const fr = asFrame(src);
-  const { L, w, h, s } = buildLum(fr, maxW);            // общий с edgeRects (мемоизирован)
+  const { raw, w, h, s } = buildWall(fr, maxW, T);      // общая мемоизированная карта граней (raw делится с edgeRects, только читаем)
   const { px } = loadScaled(fr, maxW);                  // RGB для classify/bgColor (тот же w/s → координаты сходятся)
-  const raw = new Uint8Array(w * h);                    // ПОЛЕ = сырые грани (|Δ|>T), как в edgeRects
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; raw[i] = ((x + 1 < w && Math.abs(L[i] - L[i + 1]) > T) || (y + 1 < h && Math.abs(L[i] - L[i + w]) > T) || (x > 0 && Math.abs(L[i] - L[i - 1]) > T) || (y > 0 && Math.abs(L[i] - L[i - w]) > T)) ? 1 : 0; }
   let dilW = raw;                                        // морфологическое ЗАКРЫТИЕ: сливаем штрихи глифа в блоб
   for (let d = 0; d < dil + extraDil; d++) { const nx = new Uint8Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; nx[i] = (dilW[i] || (x + 1 < w && dilW[i + 1]) || (x > 0 && dilW[i - 1]) || (y + 1 < h && dilW[i + w]) || (y > 0 && dilW[i - w])) ? 1 : 0; } dilW = nx; }
   const inv = new Uint8Array(w * h); for (let i = 0; i < w * h; i++) inv[i] = dilW[i] ? 0 : 1; // runCCL ищет src==0 → блобы = компоненты dilW==1
@@ -300,7 +308,7 @@ export function iconPass(src, { maxW = 1577, T = 9, dil = 1, extraDil = 2, tol =
     if (mn < cssMin || mx > cssMax || mn / mx < minAspect) continue;      // размер + компактность
     const extent = o.area / (bw * bh);
     if (extent < minExtent) continue;                                    // не хайрлайн
-    if (ringInk(o.x0, o.y0, o.x1, o.y1) > ringMax) continue;              // окружён фоном (не буква в слове)
+    const ri = ringInk(o.x0, o.y0, o.x1, o.y1);                           // грязь в кольце: НЕ отсекаем тут — решает гард
     const bg = bgColor(px, w, h, o.x0, o.y0, o.x1, o.y1);
     const cls = classify(px, w, { x0: o.x0, y0: o.y0, x1: o.x1, y1: o.y1 }, bg, tol);
     // Круг/глиф отличаем по СОДЕРЖИМОМУ (far от локального фона), а НЕ по блобу граней: у ФОТО-аватара грани
@@ -319,18 +327,36 @@ export function iconPass(src, { maxW = 1577, T = 9, dil = 1, extraDil = 2, tol =
     // fill<0.35), залитый квадрат (fill~1) — НЕ диск → generic icon.
     const round = cornerBg === 4 && mn / mx > 0.85 && contentFill >= 0.35 && contentFill <= 0.85;
     const shape = round ? "circle" : (cls.image ? "image" : "icon");
-    icons.push({ box: [Math.round(o.x0 / s), Math.round(o.y0 / s), Math.round(bw / s), Math.round(bh / s)], shape, image: !!cls.image, area: bw * bh });
+    icons.push({ box: [Math.round(o.x0 / s), Math.round(o.y0 / s), Math.round(bw / s), Math.round(bh / s)], shape, image: !!cls.image, area: bw * bh, ri });
   }
-  // КЛАСТЕР-ГАРД: иконка ИЗОЛИРОВАНА в пространстве; текст/текстура даёт ПЛОТНУЮ 2D-россыпь кандидатов.
-  // Оставляем тех, у кого ≤3 соседа рядом (нав-столбец/аватары = ~2 соседа сверху/снизу — ок; сетка мелкого
-  // текста = много соседей → отсев). Так «локальное возмущение» отделяется от «регулярной текстуры».
+  // ГАРД: иконка проходит если ЛИБО ИЗОЛИРОВАНА (≤3 соседа), ЛИБО узел РЕГУЛЯРНОГО ТУЛБАРА (ряд/сетка
+  // ОДИНАКОВЫХ по размеру иконок на общей линии — панель инструментов проф-софта: GIMP-тулбокс, тумблеры
+  // аутлайнера Blender, ряд кнопок Kdenlive). Текст-текстура = ПЛОТНАЯ россыпь РАЗНОРАЗМЕРНЫХ блобов, НЕ
+  // выстроенных в решётку → у неё мало «похоже-размерных коллинеарных» соседей → отсев. Т.е. регулярность
+  // РЕШЁТКИ — это СИГНАЛ (тулбар), а не шум; ровно инверсия старого «много соседей = выкинуть».
   const cen = (b) => [b.box[0] + b.box[2] / 2, b.box[1] + b.box[3] / 2];
-  const isolated = icons.filter((ic) => { const [cx, cy] = cen(ic), rad = Math.max(ic.box[2], ic.box[3]) * 2.2; let nb = 0; for (const o of icons) { if (o !== ic) { const [ox, oy] = cen(o); if (Math.abs(ox - cx) < rad && Math.abs(oy - cy) < rad) nb++; } } return nb <= 3; });
-  isolated.sort((a, b) => b.area - a.area);                                // self-дедуп по перекрытию
+  const msz = (b) => Math.min(b.box[2], b.box[3]);
+  const passed = icons.filter((ic) => {
+    const [cx, cy] = cen(ic), sz = Math.max(ic.box[2], ic.box[3]), rad = sz * 2.2;
+    let nb = 0, lattice = 0;
+    for (const o of icons) {
+      if (o === ic) continue;
+      const [ox, oy] = cen(o);
+      if (Math.abs(ox - cx) < rad && Math.abs(oy - cy) < rad) nb++;
+      const simSize = Math.abs(msz(o) - msz(ic)) / Math.max(msz(o), msz(ic), 1) < 0.35; // тот же размер
+      const near = Math.abs(ox - cx) < sz * 4 && Math.abs(oy - cy) < sz * 4;             // в пределах ~4 шагов
+      if (simSize && near && (Math.abs(oy - cy) < sz * 0.5 || Math.abs(ox - cx) < sz * 0.5)) lattice++; // тот же РЯД или СТОЛБЕЦ
+    }
+    // ИЗОЛИРОВАННАЯ = чистое кольцо (не буква в слове) И ≤3 соседа; ТУЛБАР = ≥2 одинаковых коллинеарных
+    // (решётка/ряд) — ему грязное кольцо ПОЛОЖЕНО (соседние иконки), поэтому ring-ink для него не применяем.
+    ic.grid = lattice >= 2;                                                // член решётки-тулбара (флаг для дедупа в perceive)
+    return (ic.ri <= ringMax && nb <= 3) || ic.grid;
+  });
+  passed.sort((a, b) => b.area - a.area);                                  // self-дедуп по перекрытию
   const ov = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (Math.min(a[2] * a[3], b[2] * b[3]) + 1e-9); };
   const keep = [];
-  for (const ic of isolated) { if (keep.some((k) => ov(ic.box, k.box) > 0.6)) continue; keep.push(ic); }
-  return { icons: keep.slice(0, 60) };
+  for (const ic of passed) { if (keep.some((k) => ov(ic.box, k.box) > 0.6)) continue; keep.push(ic); }
+  return { icons: keep.slice(0, 140) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -82,20 +82,30 @@ export async function perceive(buf, p) {
   // OCR (Vision, ~430мс) запускаем СРАЗУ и АСИНХРОННО — он в отдельном процессе (Neural Engine), пока
   // главный поток считает CV (капля/грань/панели). Забираем результат позже → OCR прячется ПОД CV.
   const ocrP = p.get("text") !== "0" ? TG.textBlocks(buf).catch(() => ({ blocks: [] })) : Promise.resolve({ blocks: [] });
-  const r = I.detect(frame, { tol: +(p.get("tol") || 12), maxDepth: +(p.get("maxDepth") || 3) });
+  const r = I.detect(frame, { tol: +(p.get("tol") || 12), maxDepth: +(p.get("maxDepth") || 3), maxW: +(p.get("detMaxW")) || 760 });
   const images = r.nodes.filter((n) => n.image);
   const regions = r.nodes.filter((n) => !n.image && n.shape !== "surface" && n.depth <= 1 && n.box[2] * n.box[3] > 0.004 * r.W * r.H);
+  // ДАУНСКЕЙЛ = ОПЦИЯ (агент решает сам): мелкий проход (грань-карточки/панели/ИКОНКИ) по умолчанию @1577,
+  // но `?maxW=native` (или 0) → НАТИВНОЕ разрешение (без даунскейла — ловит самые мелкие иконки/текст, но
+  // медленнее и больше кандидатов), `?maxW=2400` → своя ширина. Боксы всегда в НАТИВНЫХ px → координаты
+  // сходятся при любом maxW. `?detMaxW=N` — то же для грубого прохода detect (по умолчанию 760).
+  const mp = p.get("maxW");
+  const fineW = mp == null ? 1577 : (mp === "native" || mp === "0") ? r.W : (+mp > 0 ? +mp : 1577);
   // грань-карточки и боковые панели зависят ТОЛЬКО от кадра → считаем их тоже ДО ожидания OCR (под OCR)
   const canvasy = regions.length <= 2 && images.length === 0;
   let erRects = [], spPanels = [];
-  try { erRects = I.edgeRects(frame, canvasy ? { perimMin: 0.4, emptyMin: 0.1 } : {}).rects; spPanels = I.sidePanels(frame).panels; } catch (e) {}
+  try { erRects = I.edgeRects(frame, { maxW: fineW, ...(canvasy ? { perimMin: 0.4, emptyMin: 0.1 } : {}) }).rects; spPanels = I.sidePanels(frame, { maxW: fineW }).panels; } catch (e) {}
+  // ИКОНКИ: CV-часть (поиск блобов) зависит ТОЛЬКО от кадра, не от текста → считаем ЗДЕСЬ, ПОД OCR
+  // (переиспользует мемоизированную buildWall от edgeRects). Дедуп относительно текста — позже.
+  let iconCands = [];
+  try { iconCands = I.iconPass(frame, { maxW: fineW }).icons; } catch (e) {}
   const tg = await ocrP;                        // забираем OCR (крутился параллельно — уже почти готов)
   // текст ВНУТРИ картинки (OCR-мусор на фото) выкидываем ДО solidify, чтобы он не стал ложной «кнопкой»
   let blocks = tg.blocks.filter((b) => !images.some((im) => ovl(b.box, im.box) > 0.55));
   try { const B = await fresh("./buttons.js"); blocks = B.solidify(frame, blocks); } catch (e) {}
   const nodes = []; let id = 0;
   for (const im of images) nodes.push({ id: id++, parent: -1, shape: "image", image: true, depth: 0, box: im.box });
-  for (const c of regions) nodes.push({ id: id++, parent: -1, shape: c.shape, image: false, depth: 0, box: c.box });
+  for (const c of regions) nodes.push({ id: id++, parent: -1, shape: c.shape, image: false, depth: 0, box: c.box, colors: c.colors, edge: c.edge });
   for (const b of blocks) nodes.push({ id: id++, parent: -1, shape: b.shape === "button" ? "button" : "text", image: false, depth: 0, box: b.box, text: b.text });
   // ГИБРИД зернистости: блок-ряд/колонка остаётся для ЧТЕНИЯ, а его под-элементы (каждый чип, канал,
   // пункт меню) эмитим ОТДЕЛЬНЫМИ text-узлами → вложенность ниже делает их детьми блока, ИИ может
@@ -151,8 +161,12 @@ export async function perceive(buf, p) {
   try {
     const iouI = (a, b) => { const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]); const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a[2] * a[3] + b[2] * b[3] - i + 1e-9); };
     const added = [];
-    for (const b of I.iconPass(frame).icons) {
-      const dup = nodes.some((n) => { if (n.shape === "text" || n.shape === "button") return iouI(b.box, n.box) > 0.4; const o = ovl(b.box, n.box); if (o < 0.3) return false; if (n.image) return o > 0.55; return iouI(b.box, n.box) > 0.5; });
+    for (const b of iconCands) {                 // кандидаты посчитаны ВЫШЕ под OCR (см. iconCands)
+      // ФОТО-ПЛОСКОЕ = много ЦВЕТОВ (≥128) + МАЛО граней (<0.08) + крупное: это видео/картинка (флаг в мониторе
+      // Kdenlive: colors=193, edge=0.03), которую classify НЕ пометил image из-за низкой плотности граней (слишком
+      // гладкое). Изолированные грань-блобы на ней (герб/текстура) — ЛОЖНЫЕ иконки → давим как на image.
+      const photoFlat = (n) => n.colors >= 128 && n.edge != null && n.edge < 0.08 && A(n.box) > 0.02 * r.W * r.H;
+      const dup = nodes.some((n) => { if (n.shape === "text" || n.shape === "button") return iouI(b.box, n.box) > 0.4; const o = ovl(b.box, n.box); if (o < 0.3) return false; if (n.image || photoFlat(n)) return o > 0.55 && !b.grid; return iouI(b.box, n.box) > 0.5; }); // b.grid = член решётки-тулбара → НЕ деталь фото, оставляем даже внутри image/фото-региона
       if (dup) continue;
       const node = { id: id++, parent: -1, shape: b.shape, image: b.image, depth: 0, box: b.box };
       nodes.push(node); added.push(node);
