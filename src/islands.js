@@ -289,21 +289,31 @@ export function edgeRects(buf, { maxW = 1577, T = 9, dil = 1, minSideCss = 34, p
 // штрихи одного глифа в один блоб → ловятся и ЗАМКНУТЫЕ (круглый аватар), и ОТКРЫТЫЕ (бургер ☰, галочка ˅,
 // лучи Live, play). Текст — тоже возмущение, но либо ШИРОКИЙ (строка → отсев по аспекту), либо покрыт OCR
 // (дедуп в perceive). Круг = ≥3 из 4 углов bbox ВНЕ блоба. Нераспознанное компактное = generic `icon`.
-export function iconPass(src, { maxW = 1577, T = 9, dil = 1, extraDil = 2, tol = 14, cssMin = 12, cssMax = 72, minAspect = 0.45, minExtent = 0.22, ringMax = 0.2 } = {}) {
+export function iconPass(src, { maxW = 1577, T = 9, dil = 1, extraDil = 2, tol = 14, cssMin = 12, cssMax = 72, minAspect = 0.45, minExtent = 0.22, ringMax = 0.2, chromaTol = 55 } = {}) {
   const fr = asFrame(src);
   const { raw, w, h, s } = buildWall(fr, maxW, T);      // общая мемоизированная карта граней (raw делится с edgeRects, только читаем)
   const { px } = loadScaled(fr, maxW);                  // RGB для classify/bgColor (тот же w/s → координаты сходятся)
-  let dilW = raw;                                        // морфологическое ЗАКРЫТИЕ: сливаем штрихи глифа в блоб
+  const blobsOf = (cc) => { const m = new Map(); for (let i = 0; i < cc.n; i++) { const r = cc.find(i), a = cc.rA[i], b = cc.rB[i], y = cc.rY[i]; let o = m.get(r); if (!o) { o = { x0: a, y0: y, x1: b, y1: y, area: 0 }; m.set(r, o); } else { if (a < o.x0) o.x0 = a; if (b > o.x1) o.x1 = b; if (y < o.y0) o.y0 = y; if (y > o.y1) o.y1 = y; } o.area += b - a + 1; } return [...m.values()]; };
+  const invert = (src) => { const v = new Uint8Array(w * h); for (let i = 0; i < w * h; i++) v[i] = src[i] ? 0 : 1; return v; };
+  // ГРАНЬ-блобы (морфологическое ЗАКРЫТИЕ dil+extraDil): ОТКРЫТЫЕ глифы (бургер ☰, галочка) сливаются в блоб.
+  let dilW = raw;
   for (let d = 0; d < dil + extraDil; d++) { const nx = new Uint8Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; nx[i] = (dilW[i] || (x + 1 < w && dilW[i + 1]) || (x > 0 && dilW[i - 1]) || (y + 1 < h && dilW[i + w]) || (y > 0 && dilW[i - w])) ? 1 : 0; } dilW = nx; }
-  const inv = new Uint8Array(w * h); for (let i = 0; i < w * h; i++) inv[i] = dilW[i] ? 0 : 1; // runCCL ищет src==0 → блобы = компоненты dilW==1
-  const cc = runCCL(inv, 0, 0, w - 1, h - 1, w);
-  const acc = new Map();
-  for (let i = 0; i < cc.n; i++) { const r = cc.find(i), a = cc.rA[i], b = cc.rB[i], y = cc.rY[i]; let o = acc.get(r); if (!o) { o = { x0: a, y0: y, x1: b, y1: y, area: 0 }; acc.set(r, o); } else { if (a < o.x0) o.x0 = a; if (b > o.x1) o.x1 = b; if (y < o.y0) o.y0 = y; if (y > o.y1) o.y1 = y; } o.area += b - a + 1; }
+  const highBlobs = blobsOf(runCCL(invert(dilW), 0, 0, w - 1, h - 1, w));
+  // ЦВЕТ-ОСТРОВА (сплошные ЦВЕТНЫЕ иконки): грань+дилатация СЛИПАЕТ сплошную звезду с соседями в мега-блоб на
+  // весь таймлайн (3 из 4 ОДИНАКОВЫХ жёлтых звёзд терялись — «лотерея топологии»). Но насыщенный значок = остров
+  // ВЫСОКОЙ ЦВЕТНОСТИ (chroma = max−min RGB): жёлтая звезда chroma~190, а серый текст/UI/фон chroma~0 → компоненты
+  // насыщенных пикселей ИЗОЛИРУЮТ каждую звезду БЕЗ дилатации (между звёздами серый фон → не насыщен → НЕ мостит),
+  // и МОНОХРОМНЫЙ текст в это не попадает вовсе (главный источник шума грань-подхода). Крупные цветные области
+  // (клип/фото) отсекутся размером. Монохромные значки (замок/звук) остаются на грань-проходе.
+  const sat = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < w * h; i++, j += 3) { const mx = Math.max(px[j], px[j + 1], px[j + 2]), mn = Math.min(px[j], px[j + 1], px[j + 2]); sat[i] = (mx - mn) > chromaTol ? 0 : 1; } // src==0 = насыщенный пиксель
+  const chromaBlobs = blobsOf(runCCL(sat, 0, 0, w - 1, h - 1, w));
+  const blobList = highBlobs.concat(chromaBlobs);                        // грань (глифы) + цвет-острова (цветные иконки); дубли уберёт self-дедуп
   // изоляция: доля СЫРЫХ граней в кольце СНАРУЖИ bbox (верх/низ/лево; право пропускаем — там часто подпись).
   // Икона окружена фоном (кольцо чистое). Буква в слове → рядом соседние буквы (грани) → кольцо грязное → отсев.
   const ringInk = (x0, y0, x1, y1) => { let c = 0, n = 0; const ck = (x, y) => { if (x < 0 || y < 0 || x >= w || y >= h) return; n++; if (raw[y * w + x]) c++; }; for (let d = 2; d <= 4; d++) { for (let x = x0 - d; x <= x1 + d; x++) { ck(x, y0 - d); ck(x, y1 + d); } for (let y = y0; y <= y1; y++) ck(x0 - d, y); } return c / (n || 1); };
   const icons = [];
-  for (const o of acc.values()) {
+  for (const o of blobList) {
     const bw = o.x1 - o.x0 + 1, bh = o.y1 - o.y0 + 1, mn = Math.min(bw, bh), mx = Math.max(bw, bh);
     if (mn < cssMin || mx > cssMax || mn / mx < minAspect) continue;      // размер + компактность
     const extent = o.area / (bw * bh);
