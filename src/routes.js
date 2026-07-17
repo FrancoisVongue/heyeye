@@ -81,7 +81,13 @@ export async function perceive(buf, p) {
   const frame = I.decodeFrame(buf);            // PNG декодируем ОДИН раз → сырой RGBA, дальше все стадии берут его
   // OCR (Vision, ~430мс) запускаем СРАЗУ и АСИНХРОННО — он в отдельном процессе (Neural Engine), пока
   // главный поток считает CV (капля/грань/панели). Забираем результат позже → OCR прячется ПОД CV.
-  const ocrP = p.get("text") !== "0" ? TG.textBlocks(buf).catch(() => ({ blocks: [] })) : Promise.resolve({ blocks: [] });
+  // FAST-режим (`?fast=1`): ТОЛЬКО детекция текста (боксы без содержимого) вместо полного OCR. Замер: детекция
+  // ~100мс, распознавание ~590мс (85% времени) → perceive ~850→~250мс (≈3.4×). ИИ добирает текст региона по
+  // /read при нужде. Точность-tradeoff: слой/иконки/картинки/ПОЗИЦИИ текста те же, нет только СОДЕРЖИМОГО текста.
+  const fast = p.get("fast") === "1";
+  const ocrP = fast
+    ? fresh("./ocr-paddle.js").then((O) => O.detectBoxes(buf)).catch(() => ({ boxes: [] }))
+    : (p.get("text") !== "0" ? TG.textBlocks(buf).catch(() => ({ blocks: [] })) : Promise.resolve({ blocks: [] }));
   const r = I.detect(frame, { tol: +(p.get("tol") || 12), maxDepth: +(p.get("maxDepth") || 3), maxW: +(p.get("detMaxW")) || 760 });
   const images = r.nodes.filter((n) => n.image);
   const regions = r.nodes.filter((n) => !n.image && n.shape !== "surface" && n.depth <= 1 && n.box[2] * n.box[3] > 0.004 * r.W * r.H);
@@ -101,8 +107,14 @@ export async function perceive(buf, p) {
   try { iconCands = I.iconPass(frame, { maxW: fineW }).icons; } catch (e) {}
   const tg = await ocrP;                        // забираем OCR (крутился параллельно — уже почти готов)
   // текст ВНУТРИ картинки (OCR-мусор на фото) выкидываем ДО solidify, чтобы он не стал ложной «кнопкой»
-  let blocks = tg.blocks.filter((b) => !images.some((im) => ovl(b.box, im.box) > 0.55));
-  try { const B = await fresh("./buttons.js"); blocks = B.solidify(frame, blocks); } catch (e) {}
+  let blocks;
+  if (fast) {
+    // FAST: боксы-регионы текста БЕЗ содержимого; solidify (кнопки) и гибрид пропускаем — им нужен текст.
+    blocks = (tg.boxes || []).filter((b) => !images.some((im) => ovl(b.box, im.box) > 0.55)).map((b) => ({ box: b.box, text: "" }));
+  } else {
+    blocks = tg.blocks.filter((b) => !images.some((im) => ovl(b.box, im.box) > 0.55));
+    try { const B = await fresh("./buttons.js"); blocks = B.solidify(frame, blocks); } catch (e) {}
+  }
   const nodes = []; let id = 0;
   for (const im of images) nodes.push({ id: id++, parent: -1, shape: "image", image: true, depth: 0, box: im.box });
   for (const c of regions) nodes.push({ id: id++, parent: -1, shape: c.shape, image: false, depth: 0, box: c.box, colors: c.colors, edge: c.edge });
@@ -116,8 +128,8 @@ export async function perceive(buf, p) {
     if (nodes.some((n) => n.text && iouB(n.box, wd.box) > 0.8)) continue; // сегмент САМ уже стал блоком → не дубль
     nodes.push({ id: id++, parent: -1, shape: "text", image: false, depth: 0, box: wd.box, text: wd.text });
   }
-  let mode = "regions+text";
-  if (blocks.length < 4 && regions.length < 3) {                        // текста нет (нарисован картинкой) → XY-фолбэк
+  let mode = fast ? "regions+textboxes(fast)" : "regions+text";
+  if (!fast && blocks.length < 4 && regions.length < 3) {               // текста нет (нарисован картинкой) → XY-фолбэк (в fast пропускаем)
     const X = await fresh("./xycut.js"); const xr = X.cut(buf, { gapFrac: 0.011 });
     for (const bx of xr.blocks) if (!nodes.some((n) => ovl(bx, n.box) > 0.5)) nodes.push({ id: id++, parent: -1, shape: "block", image: false, depth: 0, box: bx });
     mode = "regions+xy(fallback)";

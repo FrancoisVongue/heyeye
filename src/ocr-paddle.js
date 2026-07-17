@@ -26,5 +26,18 @@ export async function ocrAsync(pngBuffer) {
 }
 export const ocr = ocrAsync; // синоним (обе версии асинхронные)
 
+// FAST-режим: ТОЛЬКО ДЕТЕКЦИЯ текста (~100мс), БЕЗ распознавания. Замер: детекция ~100мс находит ВСЕ боксы
+// текста (одна инференция @640px), а распознавание = ~590мс (по инференции НА КАЖДЫЙ бокс, ~85% времени OCR).
+// Отдаём геометрию текст-регионов без содержимого; ИИ добирает текст конкретного региона через /read при нужде
+// (фовеальная философия проекта: быстрый обзор → drill за деталью). pngBuffer → {W,H, boxes:[{box:[x,y,w,h]}]}.
+export async function detectBoxes(pngBuffer) {
+  const { s, ready } = service();
+  await ready;
+  const ab = pngBuffer.buffer.slice(pngBuffer.byteOffset, pngBuffer.byteOffset + pngBuffer.byteLength);
+  const canvas = await s.platform.canvas.prepareCanvas(ab); // detector.run доступен после initialize()
+  const boxes = await s.detector.run(canvas);
+  return { ...dimsPNG(pngBuffer), boxes: boxes.map((b) => ({ box: [b.x | 0, b.y | 0, b.width | 0, b.height | 0] })) };
+}
+
 // РАСПОЗНАВАНИЕ одного кропа (для ленивого /read по региону) — то же, но на маленькой картинке (быстро)
 export async function recognizeCrop(pngBuffer) { return ocrAsync(pngBuffer); }
