@@ -6,8 +6,9 @@ import { perceive } from "../src/routes.js";
 
 const COL = { button: "#f59e0b", text: "#0ea5b7", block: "#0891b2", bar: "#ff5a00", image: "#e614c8", surface: "#f0a014", rect: "#16a34a", "round-rect": "#2f6bff", circle: "#e11d48", icon: "#ff8c00", blob: "#a44bff" };
 const src = process.argv[2] || "eye/shots/clean-piano.png";
+const q = process.argv[4] || "";                 // доп. параметры perceive, напр. "maxW=native"
 const buf = fs.readFileSync(src);
-const r = await perceive(buf, new URLSearchParams(""));
+const r = await perceive(buf, new URLSearchParams(q));
 const dpr = +(process.argv[3] || 2);             // скрин Retina 2x → css = px/2; для 1:1 десктоп-скринов передать 1
 const cssW = Math.round(r.W / dpr), cssH = Math.round(r.H / dpr);
 const by = {}; for (const n of r.nodes) by[n.shape] = (by[n.shape] || 0) + 1;
@@ -23,7 +24,8 @@ const html = `<!doctype html><meta charset="utf-8"><title>perceive ${path.basena
 #legend{position:fixed;right:8px;top:8px;background:#000c;color:#fff;font:12px/1.5 ui-monospace,monospace;padding:8px 10px;border-radius:6px;z-index:9}</style>
 <div id="legend">${r.nodes.length} узлов · ${JSON.stringify(by)}<br>зелёный rect=карточка · циан text · оранж bar · синий round-rect · маджента image</div>
 <div id="w"><img src="data:image/png;base64,${buf.toString("base64")}">${boxes}</div>`;
-const out = "eye/page/perceived-" + path.basename(src).replace(/\.png$/, "") + ".html";
+const tag = q ? "-" + q.replace(/[^a-z0-9]+/gi, "") : "";
+const out = "eye/page/perceived-" + path.basename(src).replace(/\.png$/, "") + tag + ".html";
 fs.writeFileSync(out, html);
 console.log(`${r.nodes.length} узлов (${r.mode}) ${JSON.stringify(by)} → ${out}`);
 console.log("file://" + path.resolve(out));
