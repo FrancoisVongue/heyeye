@@ -2,7 +2,7 @@
 // демона. Открываем в браузере, чтобы посмотреть глазами.  node eye/test/perceive-html.js [png]
 import fs from "node:fs";
 import path from "node:path";
-import { perceive } from "../src/routes.js";
+import { perceive } from "../src/perceive.js";
 
 const COL = { button: "#f59e0b", text: "#0ea5b7", block: "#0891b2", bar: "#ff5a00", image: "#e614c8", surface: "#f0a014", rect: "#16a34a", "round-rect": "#2f6bff", circle: "#e11d48", icon: "#ff8c00", blob: "#a44bff" };
 const src = process.argv[2] || "eye/shots/clean-piano.png";

@@ -1,7 +1,7 @@
 // ГРУППИРОВКА ТЕКСТА в блоки. OCR → строки с размером → union-find: строки одного РАЗМЕРА,
 // выровненные по горизонтали и с НОРМАЛЬНЫМ межстрочным интервалом → один блок (параграф/заголовок).
-// Ловит белые карточки без цветовых границ (BBC/Yahoo), где капля пасует. Чистый JS, OCR = tesseract.
-import { ocrAsync as ocr } from "./ocr-paddle.js"; // PaddleOCR (без Apple/Python), кириллица; vision.js = Apple-fallback
+// Ловит белые карточки без цветовых границ (BBC/Yahoo), где капля пасует. Чтение текста — PaddleOCR (ocr.js).
+import { ocr } from "./ocr.js"; // принимает и сырой кадр, и PNG
 
 const ox = (a, b) => { const x0 = Math.max(a[0], b[0]), x1 = Math.min(a[0] + a[2], b[0] + b[2]); return Math.max(0, x1 - x0) / Math.min(a[2], b[2]); };
 const vgap = (a, b) => { const top = Math.max(a[1], b[1]), bot = Math.min(a[1] + a[3], b[1] + b[3]); return top - bot; }; // >0 = зазор

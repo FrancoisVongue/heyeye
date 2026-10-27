@@ -2,7 +2,7 @@
 // +вложенность+бары+фовеальность. Рисуем итог и печатаем сводку. Так проверяем ПОЛНЫЙ конвейер.
 import { PNG } from "pngjs";
 import fs from "node:fs";
-import { perceive } from "../src/routes.js";
+import { perceive } from "../src/perceive.js";
 
 const COL = { button: [245, 158, 11], text: [14, 165, 183], block: [8, 145, 178], bar: [255, 90, 0], image: [230, 20, 200], surface: [240, 160, 20], rect: [22, 163, 74], "round-rect": [47, 107, 255], circle: [225, 29, 72], blob: [164, 75, 255] };
 const path = process.argv[2] || "eye/shots/clean-piano.png";

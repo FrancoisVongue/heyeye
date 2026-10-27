@@ -1,6 +1,6 @@
 import { PNG } from "pngjs";
 import fs from "node:fs";
-import { perceive } from "../src/routes.js";
+import { perceive } from "../src/perceive.js";
 const COL = { button:[245,158,11], text:[14,165,183], block:[8,145,178], bar:[255,90,0], image:[230,20,200], surface:[240,160,20], rect:[22,163,74], "round-rect":[47,107,255], circle:[225,29,72], icon:[255,140,0], blob:[164,75,255] };
 const name = process.argv[2], cx=+process.argv[3], cy=+process.argv[4], cw=+process.argv[5], ch=+process.argv[6], zoom=+(process.argv[7]||3), q=process.argv[8]||"";
 const buf = fs.readFileSync(`eye/shots/${name}.png`);

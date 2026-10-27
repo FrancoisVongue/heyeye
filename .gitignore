@@ -12,8 +12,8 @@ page/snap-*.html
 *.png
 *.log
 
-# compiled binary — rebuild: swiftc -O bin/vision-ocr.swift -o bin/vision-ocr
-bin/vision-ocr
+# compiled helper — rebuild: npm run build (src/x11.js also rebuilds it when the .c is newer)
+native/x11eye
 
 .DS_Store
 

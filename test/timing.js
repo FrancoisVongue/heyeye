@@ -1,6 +1,6 @@
 // Замер времени: полный perceive() и по стадиям, на разных скринах.
 import fs from "node:fs";
-import { perceive } from "../src/routes.js";
+import { perceive } from "../src/perceive.js";
 import * as I from "../src/islands.js";
 import { textBlocks } from "../src/textgroup.js";
 

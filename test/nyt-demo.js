@@ -1,7 +1,7 @@
 // 1) ВЫРЕЗАТЬ отдельный регион (картинку №4) из NYT.  2) ДЕТЕРМИНИЗМ: тот же скрин → тот же ответ.
 import fs from "node:fs";
 import { PNG } from "pngjs";
-import { perceive } from "../src/routes.js";
+import { perceive } from "../src/perceive.js";
 
 const buf = fs.readFileSync("eye/shots/nytimes.png");
 const sig = (r) => JSON.stringify(r.nodes.map((n) => [n.id, n.shape, n.box, n.text || ""]));

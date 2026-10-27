@@ -4,8 +4,9 @@
 import { PNG } from "pngjs";
 import fs from "node:fs";
 
-function load(buf, maxW) {
-  const png = PNG.sync.read(buf); const { width: W, height: H, data } = png;
+function load(src, maxW) {
+  // сырой кадр { W, H, data } или PNG-буфер
+  const { W, H, data } = src && src.data && src.W ? src : (() => { const p = PNG.sync.read(src); return { W: p.width, H: p.height, data: p.data }; })();
   const s = Math.min(1, maxW / W), w = (W * s) | 0, h = (H * s) | 0;
   const rgb = new Uint8Array(w * h * 3);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = (((y / s) | 0) * W + ((x / s) | 0)) * 4, j = (y * w + x) * 3; rgb[j] = data[i]; rgb[j + 1] = data[i + 1]; rgb[j + 2] = data[i + 2]; }
